@@ -4,7 +4,7 @@ import (
 	"bwd/pkg/app"
 	"bwd/pkg/storage"
 	"context"
-	"fmt"
+	"encoding/json"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -26,7 +26,7 @@ type Bwd struct {
 	webBindingPort          string
 	storageConnectionString string
 	// map[AppID]app.App
-	apps map[int]app.App
+	apps map[int]*app.App
 	done chan struct{}
 }
 
@@ -38,7 +38,7 @@ func New(ctx context.Context, cfg *ConfigBwd, logger *logrus.Logger) *Bwd {
 		slackHook:               cfg.SlackHook,
 		webBindingPort:          cfg.WebBindingPort,
 		storageConnectionString: cfg.StorageConnectionString,
-		apps:                    make(map[int]app.App),
+		apps:                    make(map[int]*app.App),
 		done:                    make(chan struct{}),
 	}
 }
@@ -74,10 +74,99 @@ func (b *Bwd) Done() {
 	<-b.done
 }
 
+// run will read all apps from storage,
+// init them or update params
 func (b *Bwd) run() {
-	// fetch apps from storage,
+	apps, err := b.storer.Apps()
+	if err != nil {
+		b.logger.WithError(err).Error("storage Apps() error")
+		return
+	}
 
-	// init/update them
+	for _, application := range apps {
+		if application.Status == app.AppStatusInactive {
+			// continue if app is already stopped
+			if _, ok := b.apps[application.ID]; !ok {
+				continue
+			}
 
-	fmt.Println(" --- run")
+			// stop app and remove it from running apps
+			b.apps[application.ID].Stop()
+			delete(b.apps, application.ID)
+		}
+
+		// init app if not exists
+		if _, ok := b.apps[application.ID]; !ok {
+			configApp := &app.ConfigApp{
+				Storer:          b.storer,
+				ID:              application.ID,
+				Exchange:        application.Exchange,
+				MarketOrderFees: application.MarketOrderFees,
+				LimitOrderFees:  application.LimitOrderFees,
+				Base:            application.Base,
+				Quote:           application.Quote,
+				StepsType:       application.StepsType,
+				StepsDetails:    application.StepsDetails,
+			}
+
+			b.apps[application.ID] = app.New(b.ctx, configApp, b.logger)
+		}
+
+		// update params if need and restart app
+		var shouldRestart bool
+		cp := b.apps[application.ID].ConfigParams()
+
+		interval, err := time.ParseDuration(application.Interval)
+		if err != nil {
+			appJson, _ := json.Marshal(application)
+			b.logger.WithError(err).Errorf("could not parse duration, app: %s", appJson)
+		}
+		if cp.Interval != interval {
+			cp.Interval = interval
+			shouldRestart = true
+		}
+		if cp.QuotePercentUse != application.QuotePercentUse {
+			cp.QuotePercentUse = application.QuotePercentUse
+			shouldRestart = true
+		}
+		if cp.MinBasePrice != application.MinBasePrice {
+			cp.MinBasePrice = application.MinBasePrice
+			shouldRestart = true
+		}
+		if cp.MaxBasePrice != application.MaxBasePrice {
+			cp.MaxBasePrice = application.MaxBasePrice
+			shouldRestart = true
+		}
+		if cp.StepQuoteVolume != application.StepQuoteVolume {
+			cp.StepQuoteVolume = application.StepQuoteVolume
+			shouldRestart = true
+		}
+		if cp.CompoundType != application.CompoundType {
+			cp.CompoundType = application.CompoundType
+			shouldRestart = true
+		}
+		if cp.CompoundDetails != application.CompoundDetails {
+			cp.CompoundDetails = application.CompoundDetails
+			shouldRestart = true
+		}
+		if cp.PublishOrderNumber != application.PublishOrderNumber {
+			cp.PublishOrderNumber = application.PublishOrderNumber
+			shouldRestart = true
+		}
+		if cp.Status != application.Status {
+			cp.Status = application.Status
+			shouldRestart = true
+		}
+
+		if shouldRestart {
+			b.logger.Info("restart appID: %v for changing config params", application.ID)
+			b.apps[application.ID].Stop()
+			b.apps[application.ID].SetConfigParams(cp)
+			if err := b.apps[application.ID].Start(); err != nil {
+				appJson, _ := json.Marshal(application)
+				b.logger.WithError(err).Errorf("app could not be started, app: %s", appJson)
+				continue
+			}
+		}
+	}
 }

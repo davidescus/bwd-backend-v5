@@ -31,6 +31,10 @@ func NewMysql(connString string) (*Mysql, error) {
 	return &instance, nil
 }
 
+func (s *Mysql) Apps() ([]App, error) {
+	return []App{}, nil
+}
+
 func (s *Mysql) createSchemaIfNotExists() error {
 	q := `
         CREATE TABLE IF NOT EXISTS test (
