@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -167,10 +168,11 @@ func (a *App) Done() {
 func (a *App) initConnector() error {
 	switch a.exchange {
 	case ConnectorBinance:
-		// TODO set env vars, ad env vars here for start app
+		apyKey := os.Getenv("BINANCE_API_KEY")
+		secretKey := os.Getenv("BINANCE_SECRET_KEY")
 		a.connector = connector.NewBinance(&connector.BinanceConfig{
-			ApiKey:    "",
-			SecretKey: "",
+			ApiKey:    apyKey,
+			SecretKey: secretKey,
 		})
 
 		// TODO test if everything is ok here, make a request to exchange
