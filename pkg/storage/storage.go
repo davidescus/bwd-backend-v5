@@ -1,5 +1,7 @@
 package storage
 
+import "time"
+
 type Storer interface {
 	Apps() ([]App, error)
 }
@@ -9,7 +11,7 @@ type AppStorer interface {
 
 type App struct {
 	ID                 int
-	Interval           string
+	Interval           time.Duration
 	Exchange           string
 	MarketOrderFees    float64
 	LimitOrderFees     float64

@@ -25,9 +25,13 @@ type Bwd struct {
 	slackHook               string
 	webBindingPort          string
 	storageConnectionString string
-	// map[AppID]app.App
-	apps map[int]*app.App
-	done chan struct{}
+	apps                    map[int]bwdApp
+	done                    chan struct{}
+}
+
+type bwdApp struct {
+	cancelFunc func()
+	app        *app.App
 }
 
 func New(ctx context.Context, cfg *ConfigBwd, logger *logrus.Logger) *Bwd {
@@ -38,7 +42,7 @@ func New(ctx context.Context, cfg *ConfigBwd, logger *logrus.Logger) *Bwd {
 		slackHook:               cfg.SlackHook,
 		webBindingPort:          cfg.WebBindingPort,
 		storageConnectionString: cfg.StorageConnectionString,
-		apps:                    make(map[int]*app.App),
+		apps:                    make(map[int]bwdApp),
 		done:                    make(chan struct{}),
 	}
 }
@@ -58,6 +62,10 @@ func (b *Bwd) Start() error {
 		for {
 			select {
 			case <-b.ctx.Done():
+				// TODO make async stop process
+				for _, a := range b.apps {
+					a.app.Done()
+				}
 				b.done <- struct{}{}
 				return
 			default:
@@ -72,6 +80,7 @@ func (b *Bwd) Start() error {
 
 func (b *Bwd) Done() {
 	<-b.done
+	b.logger.Info("bwd successful stop")
 }
 
 // run will read all apps from storage,
@@ -91,82 +100,122 @@ func (b *Bwd) run() {
 			}
 
 			// stop app and remove it from running apps
-			b.apps[application.ID].Stop()
+			b.apps[application.ID].cancelFunc()
+			b.apps[application.ID].app.Done()
+			b.logger.Infof("appID: %d stopped, user action", application.ID)
 			delete(b.apps, application.ID)
 		}
 
+		// TODO ask @Adrian how to do
+		// TODO refactor here, it works, but does not smell good
+
 		// init app if not exists
 		if _, ok := b.apps[application.ID]; !ok {
-			configApp := &app.ConfigApp{
-				Storer:          b.storer,
-				ID:              application.ID,
-				Exchange:        application.Exchange,
-				MarketOrderFees: application.MarketOrderFees,
-				LimitOrderFees:  application.LimitOrderFees,
-				Base:            application.Base,
-				Quote:           application.Quote,
-				StepsType:       application.StepsType,
-				StepsDetails:    application.StepsDetails,
+			b.apps[application.ID] = b.initApp(application)
+			currentParams := b.apps[application.ID].app.ConfigParams()
+			newParams, _ := b.updateParams(currentParams, application)
+			// validate ConfigApp
+			if err := newParams.Validate(); err != nil {
+				configAppJson, _ := json.Marshal(newParams)
+				b.logger.WithError(err).Errorf("invalid config app, config: %s", configAppJson)
+				continue
+			}
+			b.apps[application.ID].app.SetConfigParams(newParams)
+			if err := b.apps[application.ID].app.Start(); err != nil {
+				appJson, _ := json.Marshal(application)
+				b.logger.WithError(err).Errorf("app could not be started, app: %s", appJson)
 			}
 
-			b.apps[application.ID] = app.New(b.ctx, configApp, b.logger)
+			continue
 		}
 
-		// update params if need and restart app
-		var shouldRestart bool
-		cp := b.apps[application.ID].ConfigParams()
-
-		interval, err := time.ParseDuration(application.Interval)
-		if err != nil {
-			appJson, _ := json.Marshal(application)
-			b.logger.WithError(err).Errorf("could not parse duration, app: %s", appJson)
-		}
-		if cp.Interval != interval {
-			cp.Interval = interval
-			shouldRestart = true
-		}
-		if cp.QuotePercentUse != application.QuotePercentUse {
-			cp.QuotePercentUse = application.QuotePercentUse
-			shouldRestart = true
-		}
-		if cp.MinBasePrice != application.MinBasePrice {
-			cp.MinBasePrice = application.MinBasePrice
-			shouldRestart = true
-		}
-		if cp.MaxBasePrice != application.MaxBasePrice {
-			cp.MaxBasePrice = application.MaxBasePrice
-			shouldRestart = true
-		}
-		if cp.StepQuoteVolume != application.StepQuoteVolume {
-			cp.StepQuoteVolume = application.StepQuoteVolume
-			shouldRestart = true
-		}
-		if cp.CompoundType != application.CompoundType {
-			cp.CompoundType = application.CompoundType
-			shouldRestart = true
-		}
-		if cp.CompoundDetails != application.CompoundDetails {
-			cp.CompoundDetails = application.CompoundDetails
-			shouldRestart = true
-		}
-		if cp.PublishOrderNumber != application.PublishOrderNumber {
-			cp.PublishOrderNumber = application.PublishOrderNumber
-			shouldRestart = true
-		}
-		if cp.Status != application.Status {
-			cp.Status = application.Status
-			shouldRestart = true
-		}
+		// update newParams if need and restart app
+		currentParams := b.apps[application.ID].app.ConfigParams()
+		newParams, shouldRestart := b.updateParams(currentParams, application)
 
 		if shouldRestart {
-			b.logger.Info("restart appID: %v for changing config params", application.ID)
-			b.apps[application.ID].Stop()
-			b.apps[application.ID].SetConfigParams(cp)
-			if err := b.apps[application.ID].Start(); err != nil {
+			// validate ConfigApp
+			if err := newParams.Validate(); err != nil {
+				configAppJson, _ := json.Marshal(currentParams)
+				b.logger.WithError(err).Errorf("invalid config app, config: %s", configAppJson)
+				continue
+			}
+
+			b.logger.Infof("restart appID: %d for changing config newParams", application.ID)
+			b.apps[application.ID].cancelFunc()
+			b.apps[application.ID].app.Done()
+
+			b.apps[application.ID] = b.initApp(application)
+			b.apps[application.ID].app.SetConfigParams(newParams)
+			if err := b.apps[application.ID].app.Start(); err != nil {
 				appJson, _ := json.Marshal(application)
 				b.logger.WithError(err).Errorf("app could not be started, app: %s", appJson)
 				continue
 			}
 		}
 	}
+}
+
+func (b *Bwd) initApp(a storage.App) bwdApp {
+	configApp := &app.ConfigApp{
+		Storer:          b.storer,
+		ID:              a.ID,
+		Exchange:        a.Exchange,
+		MarketOrderFees: a.MarketOrderFees,
+		LimitOrderFees:  a.LimitOrderFees,
+		Base:            a.Base,
+		Quote:           a.Quote,
+		StepsType:       a.StepsType,
+		StepsDetails:    a.StepsDetails,
+	}
+
+	ctx, cancel := context.WithCancel(b.ctx)
+
+	return bwdApp{
+		cancelFunc: cancel,
+		app:        app.New(ctx, configApp, b.logger),
+	}
+}
+
+func (b *Bwd) updateParams(p app.ConfigParams, a storage.App) (app.ConfigParams, bool) {
+	var shouldRestart bool
+
+	if p.Interval != a.Interval {
+		p.Interval = a.Interval
+		shouldRestart = true
+	}
+	if p.QuotePercentUse != a.QuotePercentUse {
+		p.QuotePercentUse = a.QuotePercentUse
+		shouldRestart = true
+	}
+	if p.MinBasePrice != a.MinBasePrice {
+		p.MinBasePrice = a.MinBasePrice
+		shouldRestart = true
+	}
+	if p.MaxBasePrice != a.MaxBasePrice {
+		p.MaxBasePrice = a.MaxBasePrice
+		shouldRestart = true
+	}
+	if p.StepQuoteVolume != a.StepQuoteVolume {
+		p.StepQuoteVolume = a.StepQuoteVolume
+		shouldRestart = true
+	}
+	if p.CompoundType != a.CompoundType {
+		p.CompoundType = a.CompoundType
+		shouldRestart = true
+	}
+	if p.CompoundDetails != a.CompoundDetails {
+		p.CompoundDetails = a.CompoundDetails
+		shouldRestart = true
+	}
+	if p.PublishOrderNumber != a.PublishOrderNumber {
+		p.PublishOrderNumber = a.PublishOrderNumber
+		shouldRestart = true
+	}
+	if p.Status != a.Status {
+		p.Status = a.Status
+		shouldRestart = true
+	}
+
+	return p, shouldRestart
 }

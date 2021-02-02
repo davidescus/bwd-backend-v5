@@ -16,3 +16,8 @@ func NewBinance(cfg *BinanceConfig) *Binance {
 		connection: binance.NewClient(cfg.ApiKey, cfg.SecretKey),
 	}
 }
+
+func (b *Binance) PairInfo(base, quote string) (PairInfo, error) {
+	// TODO implement me
+	return PairInfo{}, nil
+}
