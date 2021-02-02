@@ -43,11 +43,11 @@ type ConfigParams struct {
 }
 
 func (c *ConfigParams) Validate() error {
-	// TODO validate config params
-
 	if c.MinBasePrice > c.MaxBasePrice {
 		return errors.New("minBasePrice can not be greater than maxBasePrice")
 	}
+
+	// TODO add more validations for config params
 
 	return nil
 }
@@ -85,8 +85,8 @@ type PairInfo struct {
 	BaseMinVolume       float64
 }
 
-func New(ctx context.Context, cfg *ConfigApp, logger *logrus.Logger) *App {
-	return &App{
+func New(ctx context.Context, cfg *ConfigApp, logger *logrus.Logger) (*App, error) {
+	a := &App{
 		ctx:      ctx,
 		logger:   logger,
 		storer:   cfg.Storer,
@@ -96,6 +96,22 @@ func New(ctx context.Context, cfg *ConfigApp, logger *logrus.Logger) *App {
 		quote:    cfg.Quote,
 		done:     make(chan struct{}),
 	}
+
+	if err := a.validate(); err != nil {
+		return &App{}, err
+	}
+
+	// int connector
+	if err := a.initConnector(); err != nil {
+		return &App{}, err
+	}
+
+	// get pair info details from exchange
+	if err := a.exchangePairInfo(); err != nil {
+		return &App{}, err
+	}
+
+	return a, nil
 }
 
 func (a *App) ConfigParams() ConfigParams {
@@ -124,21 +140,7 @@ func (a *App) SetConfigParams(cfg ConfigParams) {
 	a.status = cfg.Status
 }
 
-func (a *App) Start() error {
-	if err := a.validate(); err != nil {
-		return err
-	}
-
-	// int connector
-	if err := a.initConnector(); err != nil {
-		return err
-	}
-
-	// get pair info details from exchange
-	if err := a.exchangePairInfo(); err != nil {
-		return err
-	}
-
+func (a *App) Start() {
 	go func() {
 		for {
 			select {
@@ -155,8 +157,6 @@ func (a *App) Start() error {
 	}()
 
 	a.logger.Infof("appID: %d successfull start", a.id)
-
-	return nil
 }
 
 func (a *App) Done() {
@@ -167,10 +167,13 @@ func (a *App) Done() {
 func (a *App) initConnector() error {
 	switch a.exchange {
 	case ConnectorBinance:
+		// TODO set env vars, ad env vars here for start app
 		a.connector = connector.NewBinance(&connector.BinanceConfig{
 			ApiKey:    "",
 			SecretKey: "",
 		})
+
+		// TODO test if everything is ok here, make a request to exchange
 	default:
 		return fmt.Errorf("unknown exchange: %s", a.exchange)
 	}
@@ -194,7 +197,11 @@ func (a *App) exchangePairInfo() error {
 }
 
 func (a *App) validate() error {
-	// TODO validate app params
+	if a.base == "" {
+		return errors.New("base can not be empty")
+	}
+
+	// TODO add more validations for basic params
 
 	return nil
 }

@@ -111,20 +111,29 @@ func (b *Bwd) run() {
 
 		// init app if not exists
 		if _, ok := b.apps[application.ID]; !ok {
-			b.apps[application.ID] = b.initApp(application)
+			appNewInstance, err := b.newApp(application)
+			if err != nil {
+				appJson, _ := json.Marshal(application)
+				b.logger.WithError(err).Errorf("app could not be started, app: %s", appJson)
+
+				continue
+			}
+
+			b.apps[application.ID] = appNewInstance
+
 			currentParams := b.apps[application.ID].app.ConfigParams()
 			newParams, _ := b.updateParams(currentParams, application)
 			// validate ConfigApp
 			if err := newParams.Validate(); err != nil {
+				appJson, _ := json.Marshal(application)
 				configAppJson, _ := json.Marshal(newParams)
-				b.logger.WithError(err).Errorf("invalid config app, config: %s", configAppJson)
+				b.logger.WithError(err).Errorf("invalid config app: %s, config: %s", appJson, configAppJson)
+
 				continue
 			}
+
 			b.apps[application.ID].app.SetConfigParams(newParams)
-			if err := b.apps[application.ID].app.Start(); err != nil {
-				appJson, _ := json.Marshal(application)
-				b.logger.WithError(err).Errorf("app could not be started, app: %s", appJson)
-			}
+			b.apps[application.ID].app.Start()
 
 			continue
 		}
@@ -136,8 +145,9 @@ func (b *Bwd) run() {
 		if shouldRestart {
 			// validate ConfigApp
 			if err := newParams.Validate(); err != nil {
+				appJson, _ := json.Marshal(application)
 				configAppJson, _ := json.Marshal(currentParams)
-				b.logger.WithError(err).Errorf("invalid config app, config: %s", configAppJson)
+				b.logger.WithError(err).Errorf("invalid config app: %s, config: %s", appJson, configAppJson)
 				continue
 			}
 
@@ -145,18 +155,22 @@ func (b *Bwd) run() {
 			b.apps[application.ID].cancelFunc()
 			b.apps[application.ID].app.Done()
 
-			b.apps[application.ID] = b.initApp(application)
-			b.apps[application.ID].app.SetConfigParams(newParams)
-			if err := b.apps[application.ID].app.Start(); err != nil {
+			appNewInstance, err := b.newApp(application)
+			if err != nil {
 				appJson, _ := json.Marshal(application)
-				b.logger.WithError(err).Errorf("app could not be started, app: %s", appJson)
+				b.logger.WithError(err).Errorf("app could not be started, app: %s, err: %s", appJson, err.Error())
+
 				continue
 			}
+
+			b.apps[application.ID] = appNewInstance
+			b.apps[application.ID].app.SetConfigParams(newParams)
+			b.apps[application.ID].app.Start()
 		}
 	}
 }
 
-func (b *Bwd) initApp(a storage.App) bwdApp {
+func (b *Bwd) newApp(a storage.App) (bwdApp, error) {
 	configApp := &app.ConfigApp{
 		Storer:          b.storer,
 		ID:              a.ID,
@@ -170,11 +184,16 @@ func (b *Bwd) initApp(a storage.App) bwdApp {
 	}
 
 	ctx, cancel := context.WithCancel(b.ctx)
+	application, err := app.New(ctx, configApp, b.logger)
+	if err != nil {
+		cancel()
+		return bwdApp{}, err
+	}
 
 	return bwdApp{
 		cancelFunc: cancel,
-		app:        app.New(ctx, configApp, b.logger),
-	}
+		app:        application,
+	}, nil
 }
 
 func (b *Bwd) updateParams(p app.ConfigParams, a storage.App) (app.ConfigParams, bool) {
