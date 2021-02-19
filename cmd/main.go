@@ -68,11 +68,11 @@ func main() {
 	signal.Notify(sigint, syscall.SIGINT, syscall.SIGTERM)
 	<-sigint
 
-	logger.Info("shutting down ...")
+	logger.Info("bwd shutting down ...")
 	cancel()
-	b.Done()
+	b.Wait()
 
-	logger.Info("successful stop.")
+	logger.Info("bd successful stop.")
 }
 
 type UTCFormatter struct {

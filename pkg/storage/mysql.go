@@ -89,8 +89,6 @@ func (s *Mysql) Apps() ([]App, error) {
 			&app.Status,
 			&app.IsDone,
 		)
-		// TODO if one app not work, nothing will work
-		// TODO should return valid apps
 		if err != nil {
 			return []App{}, err
 		}

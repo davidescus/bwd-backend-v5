@@ -1,13 +1,26 @@
 package bwd
 
+// bwd is responsible by:
+// - init storage
+// - configure and start/stop connectors
+// - configure and start/stop apps
+
 import (
 	"bwd/pkg/app"
+	"bwd/pkg/connector"
 	"bwd/pkg/storage"
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	binanceConnector = "BINANCE"
+	fakeConnector    = "FAKE"
 )
 
 type ConfigBwd struct {
@@ -20,18 +33,14 @@ type ConfigBwd struct {
 type Bwd struct {
 	ctx                     context.Context
 	logger                  *logrus.Logger
-	storer                  storage.Storer
+	storer                  storage.BwdStorer
 	interval                time.Duration
 	slackHook               string
 	webBindingPort          string
 	storageConnectionString string
-	apps                    map[int]bwdApp
-	done                    chan struct{}
-}
-
-type bwdApp struct {
-	cancelFunc func()
-	app        *app.App
+	connectors              map[string]connector.Connector
+	runningApps             map[int]*app.App
+	isDone                  chan struct{}
 }
 
 func New(ctx context.Context, cfg *ConfigBwd, logger *logrus.Logger) *Bwd {
@@ -42,8 +51,9 @@ func New(ctx context.Context, cfg *ConfigBwd, logger *logrus.Logger) *Bwd {
 		slackHook:               cfg.SlackHook,
 		webBindingPort:          cfg.WebBindingPort,
 		storageConnectionString: cfg.StorageConnectionString,
-		apps:                    make(map[int]bwdApp),
-		done:                    make(chan struct{}),
+		connectors:              make(map[string]connector.Connector),
+		runningApps:             make(map[int]*app.App),
+		isDone:                  make(chan struct{}),
 	}
 }
 
@@ -56,17 +66,17 @@ func (b *Bwd) Start() error {
 
 	b.storer = sql
 
-	// start goroutine that will create apps instances and update them
+	// start goroutine that will create runningApps instances and update them
 	// with new parameters periodically
 	go func() {
 		for {
 			select {
 			case <-b.ctx.Done():
 				// TODO make async stop process
-				for _, a := range b.apps {
-					a.app.Done()
+				for _, a := range b.runningApps {
+					a.Stop()
 				}
-				b.done <- struct{}{}
+				close(b.isDone)
 				return
 			default:
 				b.run()
@@ -78,13 +88,11 @@ func (b *Bwd) Start() error {
 	return nil
 }
 
-func (b *Bwd) Done() {
-	<-b.done
+func (b *Bwd) Wait() {
+	<-b.isDone
 	b.logger.Info("bwd successful stop")
 }
 
-// run will read all apps from storage,
-// init them or update params
 func (b *Bwd) run() {
 	apps, err := b.storer.Apps()
 	if err != nil {
@@ -92,149 +100,88 @@ func (b *Bwd) run() {
 		return
 	}
 
-	for _, application := range apps {
-		if application.Status == app.AppStatusInactive {
-			// continue if app is already stopped
-			if _, ok := b.apps[application.ID]; !ok {
-				continue
-			}
-
-			// stop app and remove it from running apps
-			b.apps[application.ID].cancelFunc()
-			b.apps[application.ID].app.Done()
-			b.logger.Infof("appID: %d stopped, user action", application.ID)
-			delete(b.apps, application.ID)
-		}
-
-		// TODO ask @Adrian how to do
-		// TODO refactor here, it works, but does not smell good
-
-		// init app if not exists
-		if _, ok := b.apps[application.ID]; !ok {
-			appNewInstance, err := b.newApp(application)
+	for _, a := range apps {
+		// create connector if not exists
+		_, ok := b.connectors[a.Exchange]
+		if !ok {
+			c, err := b.createConnector(a.Exchange)
 			if err != nil {
-				appJson, _ := json.Marshal(application)
-				b.logger.WithError(err).Errorf("app could not be started, app: %s", appJson)
-
+				b.logger.WithError(err).Error("could not init connector")
 				continue
 			}
-
-			b.apps[application.ID] = appNewInstance
-
-			currentParams := b.apps[application.ID].app.ConfigParams()
-			newParams, _ := b.updateParams(currentParams, application)
-			// validate ConfigApp
-			if err := newParams.Validate(); err != nil {
-				appJson, _ := json.Marshal(application)
-				configAppJson, _ := json.Marshal(newParams)
-				b.logger.WithError(err).Errorf("invalid config app: %s, config: %s", appJson, configAppJson)
-
-				continue
-			}
-
-			b.apps[application.ID].app.SetConfigParams(newParams)
-			b.apps[application.ID].app.Start()
-
-			continue
+			b.connectors[a.Exchange] = c
 		}
 
-		// update newParams if need and restart app
-		currentParams := b.apps[application.ID].app.ConfigParams()
-		newParams, shouldRestart := b.updateParams(currentParams, application)
-
-		if shouldRestart {
-			// validate ConfigApp
-			if err := newParams.Validate(); err != nil {
-				appJson, _ := json.Marshal(application)
-				configAppJson, _ := json.Marshal(currentParams)
-				b.logger.WithError(err).Errorf("invalid config app: %s, config: %s", appJson, configAppJson)
-				continue
-			}
-
-			b.logger.Infof("restart appID: %d for changing config newParams", application.ID)
-			b.apps[application.ID].cancelFunc()
-			b.apps[application.ID].app.Done()
-
-			appNewInstance, err := b.newApp(application)
-			if err != nil {
-				appJson, _ := json.Marshal(application)
-				b.logger.WithError(err).Errorf("app could not be started, app: %s, err: %s", appJson, err.Error())
-
-				continue
-			}
-
-			b.apps[application.ID] = appNewInstance
-			b.apps[application.ID].app.SetConfigParams(newParams)
-			b.apps[application.ID].app.Start()
-		}
+		b.applyAppConfig(a)
 	}
 }
 
-func (b *Bwd) newApp(a storage.App) (bwdApp, error) {
-	configApp := &app.ConfigApp{
-		Storer:          b.storer,
-		ID:              a.ID,
-		Exchange:        a.Exchange,
-		MarketOrderFees: a.MarketOrderFees,
-		LimitOrderFees:  a.LimitOrderFees,
-		Base:            a.Base,
-		Quote:           a.Quote,
-		StepsType:       a.StepsType,
-		StepsDetails:    a.StepsDetails,
+func (b *Bwd) createConnector(exchange string) (connector.Connector, error) {
+	switch exchange {
+	case binanceConnector:
+		apyKey := os.Getenv("BINANCE_API_KEY")
+		secretKey := os.Getenv("BINANCE_SECRET_KEY")
+		binanceCfg := &connector.BinanceConfig{
+			Interval:  4 * time.Second,
+			ApiKey:    apyKey,
+			SecretKey: secretKey,
+		}
+		return connector.NewBinance(binanceCfg, b.logger), nil
+	case fakeConnector:
+		fakeConnectorCfg := &connector.FakeConnectorConfig{
+			Interval: 4 * time.Second,
+		}
+		return connector.NewFakeConnector(fakeConnectorCfg, b.logger), nil
+	default:
+		return nil, fmt.Errorf("unknown exchange: %s", exchange)
 	}
-
-	ctx, cancel := context.WithCancel(b.ctx)
-	application, err := app.New(ctx, configApp, b.logger)
-	if err != nil {
-		cancel()
-		return bwdApp{}, err
-	}
-
-	return bwdApp{
-		cancelFunc: cancel,
-		app:        application,
-	}, nil
 }
 
-func (b *Bwd) updateParams(p app.ConfigParams, a storage.App) (app.ConfigParams, bool) {
-	var shouldRestart bool
+func (b *Bwd) applyAppConfig(appCfg storage.App) {
+	switch appCfg.Status {
+	case "ACTIVE":
+		// start app only if not exists in running apps
+		if _, ok := b.runningApps[appCfg.ID]; !ok {
+			a := b.createApp(appCfg)
+			err := a.Start()
+			if err != nil {
+				appJson, _ := json.Marshal(appCfg)
+				b.logger.WithError(err).Error("could not start application, appDetails: %s", appJson)
+				return
+			}
+			b.runningApps[appCfg.ID] = a
+		}
+	case "INACTIVE":
+		if a, ok := b.runningApps[appCfg.ID]; ok {
+			a.Stop()
+			delete(b.runningApps, appCfg.ID)
+		}
+	default:
+		appJson, _ := json.Marshal(appCfg)
+		b.logger.Errorf("unknown app status, app: %s", appJson)
+	}
+}
 
-	if p.Interval != a.Interval {
-		p.Interval = a.Interval
-		shouldRestart = true
-	}
-	if p.QuotePercentUse != a.QuotePercentUse {
-		p.QuotePercentUse = a.QuotePercentUse
-		shouldRestart = true
-	}
-	if p.MinBasePrice != a.MinBasePrice {
-		p.MinBasePrice = a.MinBasePrice
-		shouldRestart = true
-	}
-	if p.MaxBasePrice != a.MaxBasePrice {
-		p.MaxBasePrice = a.MaxBasePrice
-		shouldRestart = true
-	}
-	if p.StepQuoteVolume != a.StepQuoteVolume {
-		p.StepQuoteVolume = a.StepQuoteVolume
-		shouldRestart = true
-	}
-	if p.CompoundType != a.CompoundType {
-		p.CompoundType = a.CompoundType
-		shouldRestart = true
-	}
-	if p.CompoundDetails != a.CompoundDetails {
-		p.CompoundDetails = a.CompoundDetails
-		shouldRestart = true
-	}
-	if p.PublishOrderNumber != a.PublishOrderNumber {
-		p.PublishOrderNumber = a.PublishOrderNumber
-		shouldRestart = true
-	}
-	if p.Status != a.Status {
-		p.Status = a.Status
-		shouldRestart = true
+func (b *Bwd) createApp(a storage.App) *app.App {
+	appCfg := &app.ConfigApp{
+		Storer:             b.storer,
+		Connector:          b.connectors[a.Exchange],
+		Interval:           a.Interval,
+		ID:                 a.ID,
+		Exchange:           a.Exchange,
+		MarketOrderFees:    a.MarketOrderFees,
+		LimitOrderFees:     a.LimitOrderFees,
+		Base:               a.Base,
+		Quote:              a.Quote,
+		StepsType:          a.StepsType,
+		StepsDetails:       a.StepsDetails,
+		MinBasePrice:       a.MinBasePrice,
+		MaxBasePrice:       a.MaxBasePrice,
+		StepQuoteVolume:    a.StepQuoteVolume,
+		CompoundType:       a.CompoundType,
+		CompoundDetails:    a.CompoundDetails,
+		PublishOrderNumber: a.PublishOrderNumber,
 	}
 
-	return p, shouldRestart
+	return app.New(appCfg, b.logger)
 }

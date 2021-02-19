@@ -6,149 +6,125 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
-const (
-	AppStatusActive   = "ACTIVE"
-	AppStatusInactive = "INACTIVE"
-
-	ConnectorBinance = "BINANCE"
-)
-
 type ConfigApp struct {
-	Storer          storage.AppStorer
-	ID              int
-	Exchange        string
-	MarketOrderFees float64
-	LimitOrderFees  float64
-	Base            string
-	Quote           string
-	StepsType       string
-	StepsDetails    string
-}
-
-type ConfigParams struct {
+	Storer             storage.AppStorer
+	Connector          connector.Connector
 	Interval           time.Duration
-	QuotePercentUse    float64
+	ID                 int
+	Exchange           string
+	MarketOrderFees    float64
+	LimitOrderFees     float64
+	Base               string
+	Quote              string
+	StepsType          string
+	StepsDetails       string
 	MinBasePrice       float64
 	MaxBasePrice       float64
 	StepQuoteVolume    float64
 	CompoundType       string
 	CompoundDetails    string
 	PublishOrderNumber int
-	Status             string
-}
-
-func (c *ConfigParams) Validate() error {
-	if c.MinBasePrice > c.MaxBasePrice {
-		return errors.New("minBasePrice can not be greater than maxBasePrice")
-	}
-
-	// TODO add more validations for config params
-
-	return nil
 }
 
 type App struct {
-	ctx             context.Context
-	logger          *logrus.Logger
-	storer          storage.AppStorer
-	connector       connector.Connector
-	pairInfo        PairInfo
-	id              int
-	exchange        string
-	base            string
-	quote           string
-	marketOrderFees float64
-	limitOrderFees  float64
-	stepsType       string
-	stepsDetails    string
-	// params that can be changed
+	ctx                context.Context
+	logger             *logrus.Logger
+	storer             storage.AppStorer
+	connector          connector.Connector
 	interval           time.Duration
-	quotePercentUse    float64
-	minBasePrice       float64
-	maxBasePrice       float64
-	stepQuoteVolume    float64
-	compoundType       string
-	compoundDetails    string
+	id                 int
+	exchange           string
+	pair               pair
+	fees               fees
+	steps              steps
+	basePrice          basePrice
+	compound           compound
+	pairInfo           pairInfo
 	publishOrderNumber int
-	status             string
-	done               chan struct{}
+	doneSig            chan struct{}
+	stepQuoteVolume    float64
+	cancelFunc         func()
 }
 
-type PairInfo struct {
-	BasePricePrecision  int
-	QuotePricePrecision int
-	BaseMinVolume       float64
+type pair struct {
+	base, quote string
+}
+type fees struct {
+	market, limit float64
+}
+type steps struct {
+	kind, details string
+}
+type compound struct {
+	kind, details string
+}
+type basePrice struct {
+	min, max float64
+}
+type pairInfo struct {
+	basePricePrecision  int
+	quotePricePrecision int
+	baseMinVolume       float64
 }
 
-func New(ctx context.Context, cfg *ConfigApp, logger *logrus.Logger) (*App, error) {
-	a := &App{
-		ctx:      ctx,
-		logger:   logger,
-		storer:   cfg.Storer,
-		id:       cfg.ID,
-		exchange: cfg.Exchange,
-		base:     cfg.Base,
-		quote:    cfg.Quote,
-		done:     make(chan struct{}),
+// TODO add all config on app
+func New(cfg *ConfigApp, logger *logrus.Logger) *App {
+	appCtx, cancel := context.WithCancel(context.Background())
+
+	return &App{
+		ctx:        appCtx,
+		cancelFunc: cancel,
+		logger:     logger,
+		storer:     cfg.Storer,
+		connector:  cfg.Connector,
+		interval:   cfg.Interval,
+		id:         cfg.ID,
+		exchange:   cfg.Exchange,
+		pair: pair{
+			base:  cfg.Base,
+			quote: cfg.Quote,
+		},
+		fees: fees{
+			market: cfg.MarketOrderFees,
+			limit:  cfg.LimitOrderFees,
+		},
+		steps: steps{
+			kind:    cfg.StepsType,
+			details: cfg.StepsDetails,
+		},
+		basePrice: basePrice{
+			min: cfg.MinBasePrice,
+			max: cfg.MaxBasePrice,
+		},
+		compound: compound{
+			kind:    cfg.CompoundType,
+			details: cfg.CompoundDetails,
+		},
+		stepQuoteVolume:    0,
+		publishOrderNumber: 0,
+		doneSig:            make(chan struct{}),
 	}
+}
 
+func (a *App) Start() error {
 	if err := a.validate(); err != nil {
-		return &App{}, err
+		return err
 	}
 
-	// int connector
-	if err := a.initConnector(); err != nil {
-		return &App{}, err
-	}
-
-	// get pair info details from exchange
 	if err := a.exchangePairInfo(); err != nil {
-		return &App{}, err
+		return err
 	}
 
-	return a, nil
-}
-
-func (a *App) ConfigParams() ConfigParams {
-	return ConfigParams{
-		Interval:           a.interval,
-		QuotePercentUse:    a.quotePercentUse,
-		MinBasePrice:       a.minBasePrice,
-		MaxBasePrice:       a.maxBasePrice,
-		StepQuoteVolume:    a.stepQuoteVolume,
-		CompoundType:       a.compoundType,
-		CompoundDetails:    a.compoundDetails,
-		PublishOrderNumber: a.publishOrderNumber,
-		Status:             a.status,
-	}
-}
-
-func (a *App) SetConfigParams(cfg ConfigParams) {
-	a.interval = cfg.Interval
-	a.quotePercentUse = cfg.QuotePercentUse
-	a.minBasePrice = cfg.MinBasePrice
-	a.maxBasePrice = cfg.MaxBasePrice
-	a.stepQuoteVolume = cfg.StepQuoteVolume
-	a.compoundType = cfg.CompoundType
-	a.compoundDetails = cfg.CompoundDetails
-	a.publishOrderNumber = cfg.PublishOrderNumber
-	a.status = cfg.Status
-}
-
-func (a *App) Start() {
 	go func() {
 		for {
 			select {
 			case <-a.ctx.Done():
-				a.done <- struct{}{}
-				return
-			case <-a.done:
+				a.doneSig <- struct{}{}
 				return
 			default:
 				a.run()
@@ -157,58 +133,44 @@ func (a *App) Start() {
 		}
 	}()
 
-	a.logger.Infof("appID: %d successfull start", a.id)
+	a.logger.Infof("appID: %d starts with success", a.id)
+
+	return nil
 }
 
-func (a *App) Done() {
-	<-a.done
-	a.logger.Infof("appID: %d successful stop", a.id)
+func (a *App) Stop() {
+	a.logger.Infof("appID: %d stopping ...", a.id)
+	a.cancelFunc()
+
+	<-a.doneSig
+	a.logger.Infof("appID: %d stops with success", a.id)
 }
 
-func (a *App) initConnector() error {
-	switch a.exchange {
-	case ConnectorBinance:
-		apyKey := os.Getenv("BINANCE_API_KEY")
-		secretKey := os.Getenv("BINANCE_SECRET_KEY")
-		a.connector = connector.NewBinance(&connector.BinanceConfig{
-			ApiKey:    apyKey,
-			SecretKey: secretKey,
-		})
-
-		// TODO test if everything is ok here, make a request to exchange
-	default:
-		return fmt.Errorf("unknown exchange: %s", a.exchange)
+func (a *App) validate() error {
+	if a.pair.base == "" {
+		return errors.New("base can not be empty")
 	}
+
+	// TODO add more validations
 
 	return nil
 }
 
 func (a *App) exchangePairInfo() error {
-	pi, err := a.connector.PairInfo(a.base, a.quote)
+	pi, err := a.connector.PairInfo(a.pair.base, a.pair.quote)
 	if err != nil {
-		return fmt.Errorf("could not get pairInfo for pair: %s %s, err: %s", a.base, a.quote, err.Error())
+		return fmt.Errorf("could not get pairInfo for pair: %s %s, err: %s", a.pair.base, a.pair.quote, err.Error())
 	}
 
-	a.pairInfo = PairInfo{
-		BasePricePrecision:  pi.BasePricePrecision,
-		QuotePricePrecision: pi.QuotePricePrecision,
-		BaseMinVolume:       pi.BaseMinVolume,
+	a.pairInfo = pairInfo{
+		basePricePrecision:  pi.BasePricePrecision,
+		quotePricePrecision: pi.QuotePricePrecision,
+		baseMinVolume:       pi.BaseMinVolume,
 	}
-
-	return nil
-}
-
-func (a *App) validate() error {
-	if a.base == "" {
-		return errors.New("base can not be empty")
-	}
-
-	// TODO add more validations for basic params
 
 	return nil
 }
 
 func (a *App) run() {
-	fmt.Printf("--- run appID: %d\n", a.id)
-	time.Sleep(1 * time.Second)
+	a.logger.Infof("run appID: %d", a.id)
 }

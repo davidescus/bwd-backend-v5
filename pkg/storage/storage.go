@@ -2,10 +2,12 @@ package storage
 
 import "time"
 
-type Storer interface {
+// Bwd interface
+type BwdStorer interface {
 	Apps() ([]App, error)
 }
 
+// App interface
 type AppStorer interface {
 }
 
