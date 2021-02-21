@@ -1,6 +1,6 @@
 package bwd
 
-// bwd is responsible by:
+// bwd is responsible for:
 // - init storage
 // - configure and start/stop connectors
 // - configure and start/stop apps
@@ -146,7 +146,7 @@ func (b *Bwd) applyAppConfig(appCfg storage.App) {
 			err := a.Start()
 			if err != nil {
 				appJson, _ := json.Marshal(appCfg)
-				b.logger.WithError(err).Error("could not start application, appDetails: %s", appJson)
+				b.logger.WithError(err).Error("could not start application, appDetails: %s", string(appJson))
 				return
 			}
 			b.runningApps[appCfg.ID] = a

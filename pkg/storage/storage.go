@@ -7,9 +7,8 @@ type BwdStorer interface {
 	Apps() ([]App, error)
 }
 
-// App interface
-type AppStorer interface {
-}
+// App, Trader interface
+type AppStorer interface{}
 
 type App struct {
 	ID                 int

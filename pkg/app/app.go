@@ -1,11 +1,20 @@
 package app
 
+// package app is responsible for:
+// - init compounder
+// - init stepper
+// - loop at specific interval and run trader
+
 import (
+	"bwd/pkg/compound"
 	"bwd/pkg/connector"
+	"bwd/pkg/step"
 	"bwd/pkg/storage"
+	"bwd/pkg/trader"
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -41,14 +50,16 @@ type App struct {
 	exchange           string
 	pair               pair
 	fees               fees
-	steps              steps
-	basePrice          basePrice
-	compound           compound
+	steps              stepsSettings
+	basePrice          priceSettings
+	compound           compoundSettings
 	pairInfo           pairInfo
 	publishOrderNumber int
 	doneSig            chan struct{}
 	stepQuoteVolume    float64
 	cancelFunc         func()
+	stepper            step.Stepper
+	compounder         compound.Compounder
 }
 
 type pair struct {
@@ -57,13 +68,13 @@ type pair struct {
 type fees struct {
 	market, limit float64
 }
-type steps struct {
+type stepsSettings struct {
+	kind, settings string
+}
+type compoundSettings struct {
 	kind, details string
 }
-type compound struct {
-	kind, details string
-}
-type basePrice struct {
+type priceSettings struct {
 	min, max float64
 }
 type pairInfo struct {
@@ -72,7 +83,6 @@ type pairInfo struct {
 	baseMinVolume       float64
 }
 
-// TODO add all config on app
 func New(cfg *ConfigApp, logger *logrus.Logger) *App {
 	appCtx, cancel := context.WithCancel(context.Background())
 
@@ -93,15 +103,15 @@ func New(cfg *ConfigApp, logger *logrus.Logger) *App {
 			market: cfg.MarketOrderFees,
 			limit:  cfg.LimitOrderFees,
 		},
-		steps: steps{
-			kind:    cfg.StepsType,
-			details: cfg.StepsDetails,
+		steps: stepsSettings{
+			kind:     cfg.StepsType,
+			settings: cfg.StepsDetails,
 		},
-		basePrice: basePrice{
+		basePrice: priceSettings{
 			min: cfg.MinBasePrice,
 			max: cfg.MaxBasePrice,
 		},
-		compound: compound{
+		compound: compoundSettings{
 			kind:    cfg.CompoundType,
 			details: cfg.CompoundDetails,
 		},
@@ -119,6 +129,16 @@ func (a *App) Start() error {
 	if err := a.exchangePairInfo(); err != nil {
 		return err
 	}
+
+	if err := a.initStepper(); err != nil {
+		return err
+	}
+
+	if err := a.initCompounder(); err != nil {
+		return err
+	}
+
+	// TODO init trader
 
 	go func() {
 		for {
@@ -146,12 +166,11 @@ func (a *App) Stop() {
 	a.logger.Infof("appID: %d stops with success", a.id)
 }
 
+// TODO add more validations
 func (a *App) validate() error {
 	if a.pair.base == "" {
 		return errors.New("base can not be empty")
 	}
-
-	// TODO add more validations
 
 	return nil
 }
@@ -171,6 +190,47 @@ func (a *App) exchangePairInfo() error {
 	return nil
 }
 
+// TODO use constants instead of strings
+func (a *App) initStepper() error {
+	switch a.steps.kind {
+	case "FIX_INTERVAL":
+		settings := fmt.Sprintf(`{"min":"%s","max":"%s","interval":"%s","precision":%d}`,
+			strconv.FormatFloat(a.basePrice.min, 'f', -1, 64),
+			strconv.FormatFloat(a.basePrice.max, 'f', -1, 64),
+			a.steps.settings,
+			a.pairInfo.basePricePrecision,
+		)
+		s, err := step.NewStepsFixInterval(settings)
+		if err != nil {
+			return err
+		}
+		a.stepper = s
+	default:
+		return fmt.Errorf("unknown stepper type: %s", a.steps.kind)
+	}
+	return nil
+}
+
+func (a *App) initCompounder() error {
+	switch a.compound.kind {
+	case "NONE":
+		a.compounder = compound.NewCompoundNone()
+	default:
+		return fmt.Errorf("unknown stepper type: %s", a.steps.kind)
+	}
+	return nil
+}
+
 func (a *App) run() {
 	a.logger.Infof("run appID: %d", a.id)
+
+	cfgTrader := &trader.ConfigTrader{
+		Storer:     a.storer,
+		Connector:  a.connector,
+		Stepper:    a.stepper,
+		Compounder: a.compounder,
+	}
+	t := trader.New(cfgTrader, a.logger)
+
+	t.Run()
 }
