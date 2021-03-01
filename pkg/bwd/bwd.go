@@ -33,7 +33,7 @@ type ConfigBwd struct {
 type Bwd struct {
 	ctx                     context.Context
 	logger                  *logrus.Logger
-	storer                  storage.BwdStorer
+	storer                  storage.Storer
 	interval                time.Duration
 	slackHook               string
 	webBindingPort          string
@@ -72,10 +72,16 @@ func (b *Bwd) Start() error {
 		for {
 			select {
 			case <-b.ctx.Done():
-				// TODO make async stop process
+				// stop apps
 				for _, a := range b.runningApps {
 					a.Stop()
 				}
+
+				// stop connectors
+				for _, c := range b.connectors {
+					c.Stop()
+				}
+
 				close(b.isDone)
 				return
 			default:
@@ -90,7 +96,6 @@ func (b *Bwd) Start() error {
 
 func (b *Bwd) Wait() {
 	<-b.isDone
-	b.logger.Info("bwd successful stop")
 }
 
 func (b *Bwd) run() {
@@ -107,6 +112,11 @@ func (b *Bwd) run() {
 			c, err := b.createConnector(a.Exchange)
 			if err != nil {
 				b.logger.WithError(err).Error("could not init connector")
+				continue
+			}
+
+			if err = c.Start(); err != nil {
+				b.logger.WithError(err).Error("could not start connector: %s", a.Exchange)
 				continue
 			}
 			b.connectors[a.Exchange] = c

@@ -1,10 +1,25 @@
 package connector
 
+const (
+	OrderTypeMarket = "MARKET"
+	OrderTypeLimit  = "LIMIT"
+
+	OrderSideBuy  = "BUY"
+	OrderSideSell = "SELL"
+
+	OrderStatusNew      = "NEW"
+	OrderStatusExecuted = "EXECUTED"
+	OrderStatusNotFound = "NOT_FOUND"
+)
+
 type Connector interface {
+	Start() error
+	Stop()
 	PairInfo(base, quote string) (PairInfo, error)
 	AddOrder(appID int, order Order) (string, error)
 	CancelOrder(order Order) error
-	OrdersDetails(appID int, ordersIds []string) []Order
+	OrderDetails(appID int, order Order) (Order, error)
+	OrdersDetails(appID int) []Order
 }
 
 type PairInfo struct {
@@ -15,7 +30,12 @@ type PairInfo struct {
 }
 
 type Order struct {
-	ID     string
-	Pair   string
-	Status string
+	ID        string
+	Base      string
+	Quote     string
+	OrderType string
+	Side      string
+	Price     float64
+	Volume    float64
+	Status    string
 }

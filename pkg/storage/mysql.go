@@ -2,8 +2,10 @@ package storage
 
 import (
 	"database/sql"
-	"strconv"
+	"fmt"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -43,7 +45,6 @@ func (s *Mysql) Apps() ([]App, error) {
             limit_order_fees,
             base,
             quote,
-            quote_percent_usage,
             min_base_price,
             max_base_price,
             step_quote_volume,
@@ -52,8 +53,7 @@ func (s *Mysql) Apps() ([]App, error) {
             compound_type,
             compound_details,
             publish_orders_number,
-            status,
-            is_done   
+            status
         FROM apps
    `)
 
@@ -66,28 +66,25 @@ func (s *Mysql) Apps() ([]App, error) {
 
 	for rows.Next() {
 		var app App
-		var runInterval, marketOrderFees, limitOrderFees, quotePercentUsage string
-		var minBasePrice, maxBasePrice, stepQuoteVol string
+		var runInterval string
 
 		err := rows.Scan(
 			&app.ID,
 			&runInterval,
 			&app.Exchange,
-			&marketOrderFees,
-			&limitOrderFees,
+			&app.MarketOrderFees,
+			&app.LimitOrderFees,
 			&app.Base,
 			&app.Quote,
-			&quotePercentUsage,
-			&minBasePrice,
-			&maxBasePrice,
-			&stepQuoteVol,
+			&app.MinBasePrice,
+			&app.MaxBasePrice,
+			&app.StepQuoteVolume,
 			&app.StepsType,
 			&app.StepsDetails,
 			&app.CompoundType,
 			&app.CompoundDetails,
 			&app.PublishOrderNumber,
 			&app.Status,
-			&app.IsDone,
 		)
 		if err != nil {
 			return []App{}, err
@@ -99,46 +96,160 @@ func (s *Mysql) Apps() ([]App, error) {
 		}
 		app.Interval = interval
 
-		marketOrderFeesFloat, err := strconv.ParseFloat(marketOrderFees, 64)
-		if err != nil {
-			return []App{}, err
-		}
-		app.MarketOrderFees = marketOrderFeesFloat
-
-		limitOrderFeesFloat, err := strconv.ParseFloat(limitOrderFees, 64)
-		if err != nil {
-			return []App{}, err
-		}
-		app.LimitOrderFees = limitOrderFeesFloat
-
-		quotePercentageUsageFloat, err := strconv.ParseFloat(quotePercentUsage, 64)
-		if err != nil {
-			return []App{}, err
-		}
-		app.QuotePercentUse = quotePercentageUsageFloat
-
-		minBasePriceFloat, err := strconv.ParseFloat(minBasePrice, 64)
-		if err != nil {
-			return []App{}, err
-		}
-		app.MinBasePrice = minBasePriceFloat
-
-		maxBasePriceFloat, err := strconv.ParseFloat(maxBasePrice, 64)
-		if err != nil {
-			return []App{}, err
-		}
-		app.MaxBasePrice = maxBasePriceFloat
-
-		stepQuoteVolumeFloat, err := strconv.ParseFloat(stepQuoteVol, 64)
-		if err != nil {
-			return []App{}, err
-		}
-		app.StepQuoteVolume = stepQuoteVolumeFloat
-
 		apps = append(apps, app)
 	}
 
 	return apps, nil
+}
+
+func (s *Mysql) ActiveTrades(appID int) ([]Trade, error) {
+	q := fmt.Sprintf(`
+		SELECT
+			id,   
+			app_id,
+			open_base_price,
+			close_base_price,
+			open_type,
+			close_type,
+			base_volume,
+			buy_order_id,
+			sell_order_id,
+			status,
+			converted_sell_limit_at,
+			closed_at,
+			updated_at,   
+			created_at
+		FROM trades
+		WHERE 1
+			AND app_id = %d
+			AND status != 'CLOSED'
+       `,
+		appID,
+	)
+	rows, err := s.db.Query(q)
+
+	if err != nil {
+		return []Trade{}, err
+	}
+	defer rows.Close()
+
+	var trades []Trade
+	for rows.Next() {
+		var trade Trade
+		var convertedSellLimitAt, closedAt, updatedAt, createdAt mysql.NullTime
+
+		err := rows.Scan(
+			&trade.ID,
+			&trade.AppID,
+			&trade.OpenBasePrice,
+			&trade.CloseBasePrice,
+			&trade.OpenType,
+			&trade.CloseType,
+			&trade.BaseVolume,
+			&trade.BuyOrderID,
+			&trade.SellOrderID,
+			&trade.Status,
+			&convertedSellLimitAt,
+			&closedAt,
+			&updatedAt,
+			&createdAt,
+		)
+		if err != nil {
+			return trades, err
+		}
+
+		if convertedSellLimitAt.Valid {
+			trade.ConvertedSellLimitAt = convertedSellLimitAt.Time
+		}
+		if closedAt.Valid {
+			trade.ClosedAt = closedAt.Time
+		}
+		if updatedAt.Valid {
+			trade.UpdatedAt = updatedAt.Time
+		}
+		if createdAt.Valid {
+			trade.CreatedAt = createdAt.Time
+		}
+
+		trades = append(trades, trade)
+	}
+
+	return trades, nil
+}
+
+func (s *Mysql) AddTrade(trade Trade) error {
+	q := `
+		INSERT INTO trades (
+		    app_id,
+		    open_base_price,
+		    close_base_price,
+		    open_type,
+		    close_type,
+		    base_volume,
+		    buy_order_id,
+		    sell_order_id,
+		    status,
+	        converted_sell_limit_at,
+		    closed_at,
+		    created_at
+	    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `
+
+	_, err := s.db.Exec(q,
+		trade.AppID,
+		trade.OpenBasePrice,
+		trade.CloseBasePrice,
+		trade.OpenType,
+		trade.CloseType,
+		trade.BaseVolume,
+		trade.BuyOrderID,
+		trade.SellOrderID,
+		trade.Status,
+		sqlNullableTime(trade.ConvertedSellLimitAt),
+		sqlNullableTime(trade.ClosedAt),
+		sqlNullableTime(trade.CreatedAt),
+	)
+
+	return err
+}
+
+func (s *Mysql) UpdateTrade(trade Trade) error {
+	q := `
+		UPDATE trades SET
+			open_type = ?,
+		    close_type = ?,
+		    buy_order_id = ?,
+		    sell_order_id = ?,
+		    status = ?,
+	        converted_sell_limit_at = ?,
+		    closed_at = ?,
+		    updated_at = ?           
+		WHERE id = ?
+	`
+
+	_, err := s.db.Exec(q,
+		trade.OpenType,
+		trade.CloseType,
+		trade.BuyOrderID,
+		trade.SellOrderID,
+		trade.Status,
+		sqlNullableTime(trade.ConvertedSellLimitAt),
+		sqlNullableTime(trade.ClosedAt),
+		sqlNullableTime(time.Now().UTC()),
+		trade.ID,
+	)
+
+	return err
+}
+
+func sqlNullableTime(t time.Time) mysql.NullTime {
+	if t.IsZero() {
+		return mysql.NullTime{}
+	}
+	return mysql.NullTime{
+		Time:  t,
+		Valid: true,
+	}
 }
 
 func (s *Mysql) createSchemaIfNotExists() error {
@@ -146,27 +257,54 @@ func (s *Mysql) createSchemaIfNotExists() error {
         CREATE TABLE IF NOT EXISTS apps (
             id INT PRIMARY KEY AUTO_INCREMENT,
             app_id INT UNIQUE,
-            run_interval VARCHAR(32),
-            exchange VARCHAR(32),
-            market_order_fees VARCHAR(32),
-            limit_order_fees VARCHAR(32),
-            base VARCHAR(32),
-            quote VARCHAR(32),
-            quote_percent_usage VARCHAR(32),
-            min_base_price VARCHAR(32),
-            max_base_price VARCHAR(32),
-            step_quote_volume VARCHAR(32),
-            steps_type VARCHAR(32),
-            steps_details VARCHAR(32),
-            compound_type VARCHAR(32),
-            compound_details VARCHAR(32),
-            publish_orders_number INT,
-            status VARCHAR(32),
-            is_done INT
+            run_interval VARCHAR(32) DEFAULT '',
+            exchange VARCHAR(32) DEFAULT '',
+            market_order_fees DECIMAL(5,4) DEFAULT 0,
+            limit_order_fees DECIMAL(5,4) DEFAULT 0,
+            base VARCHAR(32) DEFAULT '',
+            quote VARCHAR(32) DEFAULT '',
+            min_base_price DECIMAL(16,10) DEFAULT 0,
+            max_base_price DECIMAL(16,10) DEFAULT 0,
+            step_quote_volume DECIMAL(16,10) DEFAULT 0,
+            steps_type VARCHAR(32) DEFAULT '',
+            steps_details VARCHAR(32) DEFAULT '',
+            compound_type VARCHAR(32) DEFAULT '',
+            compound_details VARCHAR(32) DEFAULT '',
+            publish_orders_number INT DEFAULT 0,
+            status VARCHAR(32) DEFAULT ''
         )    
     `
 
 	stmt, err := s.db.Prepare(q)
+	if err != nil {
+		return err
+	}
+
+	_, err = stmt.Exec()
+	if err != nil {
+		return err
+	}
+
+	q = `
+        CREATE TABLE IF NOT EXISTS trades (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            app_id INT,
+            open_base_price DECIMAL(16,10) DEFAULT 0,
+            close_base_price DECIMAL(16,10) DEFAULT 0,
+            open_type VARCHAR(32) DEFAULT '',
+            close_type VARCHAR(32) DEFAULT '',
+            base_volume DECIMAL(16,10) DEFAULT 0,
+            buy_order_id VARCHAR(256) DEFAULT '',
+            sell_order_id VARCHAR(256) DEFAULT '',
+            status VARCHAR(64) DEFAULT '',
+            converted_sell_limit_at TIMESTAMP,
+            closed_at TIMESTAMP,
+            updated_at TIMESTAMP,
+            created_at TIMESTAMP
+        )    
+    `
+
+	stmt, err = s.db.Prepare(q)
 	if err != nil {
 		return err
 	}

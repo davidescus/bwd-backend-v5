@@ -21,7 +21,7 @@ import (
 )
 
 type ConfigApp struct {
-	Storer             storage.AppStorer
+	Storer             storage.Storer
 	Connector          connector.Connector
 	Interval           time.Duration
 	ID                 int
@@ -43,7 +43,7 @@ type ConfigApp struct {
 type App struct {
 	ctx                context.Context
 	logger             *logrus.Logger
-	storer             storage.AppStorer
+	storer             storage.Storer
 	connector          connector.Connector
 	interval           time.Duration
 	id                 int
@@ -115,8 +115,8 @@ func New(cfg *ConfigApp, logger *logrus.Logger) *App {
 			kind:    cfg.CompoundType,
 			details: cfg.CompoundDetails,
 		},
-		stepQuoteVolume:    0,
-		publishOrderNumber: 0,
+		stepQuoteVolume:    cfg.StepQuoteVolume,
+		publishOrderNumber: cfg.PublishOrderNumber,
 		doneSig:            make(chan struct{}),
 	}
 }
@@ -137,8 +137,6 @@ func (a *App) Start() error {
 	if err := a.initCompounder(); err != nil {
 		return err
 	}
-
-	// TODO init trader
 
 	go func() {
 		for {
@@ -214,7 +212,7 @@ func (a *App) initStepper() error {
 func (a *App) initCompounder() error {
 	switch a.compound.kind {
 	case "NONE":
-		a.compounder = compound.NewCompoundNone()
+		a.compounder = compound.NewCompoundNone(a.stepQuoteVolume)
 	default:
 		return fmt.Errorf("unknown stepper type: %s", a.steps.kind)
 	}
@@ -225,10 +223,13 @@ func (a *App) run() {
 	a.logger.Infof("run appID: %d", a.id)
 
 	cfgTrader := &trader.ConfigTrader{
+		AppID:      a.id,
 		Storer:     a.storer,
 		Connector:  a.connector,
 		Stepper:    a.stepper,
 		Compounder: a.compounder,
+		Base:       a.pair.base,
+		Quote:      a.pair.quote,
 	}
 	t := trader.New(cfgTrader, a.logger)
 

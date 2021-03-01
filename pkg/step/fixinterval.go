@@ -35,6 +35,10 @@ func (s *StepsFixInterval) Steps() []float64 {
 	return steps
 }
 
+func (s *StepsFixInterval) NextStepUp(step float64) float64 {
+	return toFixed(step+s.interval, s.precision)
+}
+
 func (s *StepsFixInterval) parseSettings(settings string) error {
 	tmp := struct {
 		Min       string `json:"min"`

@@ -3,12 +3,14 @@ package storage
 import "time"
 
 // Bwd interface
-type BwdStorer interface {
+type Storer interface {
+	// Bwd
 	Apps() ([]App, error)
+	// Trader
+	ActiveTrades(appID int) ([]Trade, error)
+	AddTrade(trade Trade) error
+	UpdateTrade(trade Trade) error
 }
-
-// App, Trader interface
-type AppStorer interface{}
 
 type App struct {
 	ID                 int
@@ -29,4 +31,21 @@ type App struct {
 	PublishOrderNumber int
 	Status             string
 	IsDone             bool
+}
+
+type Trade struct {
+	ID                   int
+	AppID                int
+	OpenBasePrice        float64
+	CloseBasePrice       float64
+	OpenType             string
+	CloseType            string
+	BaseVolume           float64
+	BuyOrderID           string
+	SellOrderID          string
+	Status               string
+	ConvertedSellLimitAt time.Time
+	ClosedAt             time.Time
+	UpdatedAt            time.Time
+	CreatedAt            time.Time
 }

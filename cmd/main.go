@@ -25,9 +25,9 @@ func (c *Config) validate() error {
 		return errors.New("[CONFIG] Interval should be greater than 100ms")
 	}
 
-	if c.WebBindingPort == "" {
-		return errors.New("[CONFIG] WebBindingPort can not be empty")
-	}
+	//if c.WebBindingPort == "" {
+	//	return errors.New("[CONFIG] WebBindingPort can not be empty")
+	//}
 
 	if c.StorageConnectionString == "" {
 		return errors.New("[CONFIG] StorageConnectionString can not be empty")
@@ -68,11 +68,11 @@ func main() {
 	signal.Notify(sigint, syscall.SIGINT, syscall.SIGTERM)
 	<-sigint
 
-	logger.Info("bwd shutting down ...")
+	logger.Info("bwd stopping ...")
 	cancel()
 	b.Wait()
 
-	logger.Info("bd successful stop.")
+	logger.Info("bwd successful stop.")
 }
 
 type UTCFormatter struct {

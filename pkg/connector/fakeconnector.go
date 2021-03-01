@@ -39,7 +39,7 @@ func NewFakeConnector(cfg *FakeConnectorConfig, logger *logrus.Logger) *FakeConn
 	}
 }
 
-func (f *FakeConnector) Start() {
+func (f *FakeConnector) Start() error {
 	go func() {
 		for {
 			select {
@@ -54,6 +54,8 @@ func (f *FakeConnector) Start() {
 	}()
 
 	f.logger.Infof("connector FakeConnector successful start")
+
+	return nil
 }
 
 func (f *FakeConnector) Stop() {
@@ -74,44 +76,60 @@ func (f *FakeConnector) PairInfo(base, quote string) (PairInfo, error) {
 }
 
 func (f *FakeConnector) AddOrder(appID int, order Order) (string, error) {
-	// TODO create order details from it
-	return strconv.Itoa(rand.Intn(1000000)), nil
+	order.ID = strconv.Itoa(rand.Intn(10000000))
+
+	f.m.Lock()
+	defer f.m.Unlock()
+
+	order.Status = OrderStatusNew
+	f.orders[appID] = append(f.orders[appID], order)
+
+	return order.ID, nil
 }
 
+// TODO implement me
 func (f *FakeConnector) CancelOrder(order Order) error {
 	return nil
 }
 
-func (f *FakeConnector) OrdersDetails(appID int, ordersIds []string) []Order {
+// first search on new orders, after this search on exchange for it
+func (f *FakeConnector) OrderDetails(appID int, order Order) (Order, error) {
 	f.m.Lock()
 	defer f.m.Unlock()
 
-	var data []Order
-
-	for _, id := range ordersIds {
-		var hasOrder bool
-
-		for _, order := range f.orders[appID] {
-			if order.ID == id {
-				data = append(data, order)
-				hasOrder = true
-				break
-			}
-		}
-
-		if !hasOrder {
-			data = append(data, Order{
-				ID:     id,
-				Pair:   "",
-				Status: "NOT_FOUND",
-			})
+	for _, order := range f.orders[appID] {
+		if order.ID == order.ID {
+			return order, nil
 		}
 	}
 
-	return data
+	return Order{
+		ID:     order.ID,
+		Status: OrderStatusNotFound,
+	}, nil
+
+}
+
+func (f *FakeConnector) OrdersDetails(appID int) []Order {
+	f.m.Lock()
+	defer f.m.Unlock()
+
+	return f.orders[appID]
 }
 
 func (f *FakeConnector) run() {
 	f.logger.Info("--- FakeConnector connector run")
-	// Here should happen the magic
+
+	f.m.Lock()
+	defer f.m.Unlock()
+
+	// random orders executed
+	for appID, _ := range f.orders {
+		for idx, order := range f.orders[appID] {
+			if rand.Intn(100000)%2 == 0 {
+				order.Status = OrderStatusExecuted
+				f.orders[appID][idx] = order
+			}
+		}
+	}
 }
