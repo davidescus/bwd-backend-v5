@@ -12,12 +12,17 @@ import (
 	"bwd/pkg/storage"
 	"bwd/pkg/trader"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	stepsTypeFixInterval = "FIX_INTERVAL"
 )
 
 type ConfigApp struct {
@@ -80,7 +85,13 @@ type priceSettings struct {
 type pairInfo struct {
 	basePricePrecision  int
 	quotePricePrecision int
-	baseMinVolume       float64
+	basePrice           struct {
+		min, max, tick float64
+	}
+	baseLot struct {
+		min, max, tick float64
+	}
+	quoteMinVolume float64
 }
 
 func New(cfg *ConfigApp, logger *logrus.Logger) *App {
@@ -122,11 +133,11 @@ func New(cfg *ConfigApp, logger *logrus.Logger) *App {
 }
 
 func (a *App) Start() error {
-	if err := a.validate(); err != nil {
+	if err := a.exchangePairInfo(); err != nil {
 		return err
 	}
 
-	if err := a.exchangePairInfo(); err != nil {
+	if err := a.validate(); err != nil {
 		return err
 	}
 
@@ -164,10 +175,49 @@ func (a *App) Stop() {
 	a.logger.Infof("appID: %d stops with success", a.id)
 }
 
-// TODO add more validations
 func (a *App) validate() error {
+	if a.id < 1 {
+		return errors.New("appId should be unique and greater than 1")
+	}
+
+	if a.exchange == "" {
+		return errors.New("exchange can not be empty")
+	}
+
 	if a.pair.base == "" {
 		return errors.New("base can not be empty")
+	}
+
+	if a.pair.quote == "" {
+		return errors.New("quote can not be empty")
+	}
+
+	if a.fees.market < 0 {
+		return errors.New("market order fee can not be less than 0")
+	}
+
+	if a.fees.limit < 0 {
+		return errors.New("limit order fee can not be less than 0")
+	}
+
+	if a.basePrice.min < a.pairInfo.basePrice.min {
+		return errors.New("minBasePrice should be greater or equal than exchange minBasePrice")
+	}
+
+	if a.basePrice.max > a.pairInfo.basePrice.max {
+		return errors.New("maxBasePrice should be lower or equal than exchange maxBasePrice")
+	}
+
+	if a.basePrice.max < a.basePrice.min {
+		return errors.New("maxBasePrice should be greater or equal with minBasePrice")
+	}
+
+	if a.stepQuoteVolume < a.pairInfo.quoteMinVolume {
+		return errors.New("stepQuoteVolume can not be less than pair quoteMinVolume")
+	}
+
+	if a.publishOrderNumber < 1 {
+		return errors.New("publishOrdersNumber should be at least 1")
 	}
 
 	return nil
@@ -182,26 +232,49 @@ func (a *App) exchangePairInfo() error {
 	a.pairInfo = pairInfo{
 		basePricePrecision:  pi.BasePricePrecision,
 		quotePricePrecision: pi.QuotePricePrecision,
-		baseMinVolume:       pi.BaseMinVolume,
+		basePrice: struct {
+			min, max, tick float64
+		}{
+			pi.BasePrice.Min,
+			pi.BasePrice.Max,
+			pi.BasePrice.Tick,
+		},
+		baseLot: struct {
+			min, max, tick float64
+		}{
+			pi.BaseLot.Min,
+			pi.BaseLot.Max,
+			pi.BaseLot.Tick,
+		},
+		quoteMinVolume: pi.QuoteMinVolume,
 	}
 
 	return nil
 }
 
-// TODO use constants instead of strings
 func (a *App) initStepper() error {
 	switch a.steps.kind {
-	case "FIX_INTERVAL":
-		settings := fmt.Sprintf(`{"min":"%s","max":"%s","interval":"%s","precision":%d}`,
-			strconv.FormatFloat(a.basePrice.min, 'f', -1, 64),
-			strconv.FormatFloat(a.basePrice.max, 'f', -1, 64),
-			a.steps.settings,
-			a.pairInfo.basePricePrecision,
-		)
-		s, err := step.NewStepsFixInterval(settings)
-		if err != nil {
-			return err
+	case stepsTypeFixInterval:
+		cfgStepsFixInterval := step.ConfigStepsFixInterval{
+			MinPriceAllowed: a.pairInfo.basePrice.min,
+			MaxPriceAllowed: a.pairInfo.basePrice.max,
+			PriceTick:       a.pairInfo.basePrice.tick,
+			AppSettings: fmt.Sprintf(`{"min":"%s","max":"%s","interval":"%s"}`,
+				strconv.FormatFloat(a.basePrice.min, 'f', -1, 64),
+				strconv.FormatFloat(a.basePrice.max, 'f', -1, 64),
+				a.steps.settings,
+			),
 		}
+		s, err := step.NewStepsFixInterval(&cfgStepsFixInterval)
+		if err != nil {
+			cfgJson, _ := json.Marshal(cfgStepsFixInterval)
+			return fmt.Errorf("cound not init stepper: %s with config: %s, err: %s",
+				stepsTypeFixInterval,
+				cfgJson,
+				err.Error(),
+			)
+		}
+
 		a.stepper = s
 	default:
 		return fmt.Errorf("unknown stepper type: %s", a.steps.kind)
@@ -212,7 +285,12 @@ func (a *App) initStepper() error {
 func (a *App) initCompounder() error {
 	switch a.compound.kind {
 	case "NONE":
-		a.compounder = compound.NewCompoundNone(a.stepQuoteVolume)
+		a.compounder = compound.NewCompoundNone(&compound.ConfigNone{
+			InitialStepQuoteVolume: a.stepQuoteVolume,
+			MinBaseLotAllowed:      a.pairInfo.baseLot.min,
+			MaxBaseLotAllowed:      a.pairInfo.baseLot.max,
+			BaseLotTick:            a.pairInfo.baseLot.tick,
+		})
 	default:
 		return fmt.Errorf("unknown stepper type: %s", a.steps.kind)
 	}
@@ -220,8 +298,6 @@ func (a *App) initCompounder() error {
 }
 
 func (a *App) run() {
-	a.logger.Infof("run appID: %d", a.id)
-
 	cfgTrader := &trader.ConfigTrader{
 		AppID:      a.id,
 		Storer:     a.storer,

@@ -107,20 +107,9 @@ func (b *Binance) PairInfo(base, quote string) (PairInfo, error) {
 				BasePricePrecision:  r.BaseAssetPrecision,
 				QuotePricePrecision: r.QuotePrecision,
 			}
-			for k, val := range r.Filters[2] {
-				if k != "minQty" {
-					continue
-				}
-				v, ok := val.(string)
-				if !ok {
-					return PairInfo{}, fmt.Errorf("could not get minQty for pair: %s", r.Symbol)
-				}
 
-				floatVal, err := strconv.ParseFloat(v, 64)
-				if err != nil {
-					return PairInfo{}, fmt.Errorf("could not convert to float minQty for pair: %s, err: %w", r.Symbol, err)
-				}
-				pairInfo.BaseMinVolume = floatVal
+			if err := loadPairInfo(r.Filters, &pairInfo); err != nil {
+				return PairInfo{}, err
 			}
 
 			return pairInfo, nil
@@ -223,10 +212,7 @@ func (b *Binance) OrdersDetails(appID int) []Order {
 	return b.orders[appID]
 }
 
-// TODO implement me
 func (b *Binance) run() {
-	b.logger.Info("--- binance connector run")
-
 	exhOpenOrders, err := b.openOrders()
 	if err != nil {
 		b.logger.WithError(err).Warn("could not fetch open exhOrders from exchange")
@@ -379,4 +365,67 @@ func (b *Binance) castExchangeOrder(order *binance.Order) (Order, error) {
 		Volume:    volume,
 		Status:    status,
 	}, nil
+}
+
+func loadPairInfo(filters []map[string]interface{}, pairInfo *PairInfo) error {
+	// base price
+	minBasePrice, err := filterValue(filters[0], "minPrice")
+	if err != nil {
+		return err
+	}
+	pairInfo.BasePrice.Min = minBasePrice
+
+	maxBasePrice, err := filterValue(filters[0], "maxPrice")
+	if err != nil {
+		return err
+	}
+	pairInfo.BasePrice.Max = maxBasePrice
+
+	basePriceTick, err := filterValue(filters[0], "tickSize")
+	if err != nil {
+		return err
+	}
+	pairInfo.BasePrice.Tick = basePriceTick
+
+	// baseLot
+	minBaseLotSize, err := filterValue(filters[2], "minQty")
+	if err != nil {
+		return err
+	}
+	pairInfo.BaseLot.Min = minBaseLotSize
+
+	maxBaseLotSize, err := filterValue(filters[2], "maxQty")
+	if err != nil {
+		return err
+	}
+	pairInfo.BaseLot.Max = maxBaseLotSize
+
+	baseLotTick, err := filterValue(filters[2], "stepSize")
+	if err != nil {
+		return err
+	}
+	pairInfo.BaseLot.Tick = baseLotTick
+
+	quoteMinVolume, err := filterValue(filters[3], "minNotional")
+	if err != nil {
+		return err
+	}
+	pairInfo.QuoteMinVolume = quoteMinVolume
+
+	return nil
+}
+
+func filterValue(filter map[string]interface{}, key string) (float64, error) {
+	for k, val := range filter {
+		if k == key {
+			v, ok := val.(string)
+			if !ok {
+				return 0, fmt.Errorf("could not cast to string value for %s from filters", key)
+			}
+
+			return strconv.ParseFloat(v, 64)
+		}
+	}
+
+	return 0, fmt.Errorf("key: %s not found on binane filter", key)
 }

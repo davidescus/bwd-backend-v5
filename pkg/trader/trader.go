@@ -202,15 +202,20 @@ func (t *Trader) addMissingTrades() error {
 		}
 
 		if !hasTrade {
-			trade := storage.Trade{
+			volume, err := t.compounder.Volume(s)
+			if err != nil {
+				return err
+			}
+
+			trd := storage.Trade{
 				AppID:          t.appID,
 				OpenBasePrice:  s,
-				CloseBasePrice: t.stepper.NextStepUp(s),
-				BaseVolume:     t.compounder.Volume(s),
+				CloseBasePrice: t.stepper.ClosePrice(s),
+				BaseVolume:     volume,
 				Status:         statusBuyLimit,
 				CreatedAt:      time.Now().UTC(),
 			}
-			if err := t.storer.AddTrade(trade); err != nil {
+			if err := t.storer.AddTrade(trd); err != nil {
 				return err
 			}
 		}

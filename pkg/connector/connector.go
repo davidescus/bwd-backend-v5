@@ -23,10 +23,15 @@ type Connector interface {
 }
 
 type PairInfo struct {
-	PairName            string
 	BasePricePrecision  int
 	QuotePricePrecision int
-	BaseMinVolume       float64
+	BasePrice           struct {
+		Min, Max, Tick float64
+	}
+	BaseLot struct {
+		Min, Max, Tick float64
+	}
+	QuoteMinVolume float64
 }
 
 type Order struct {

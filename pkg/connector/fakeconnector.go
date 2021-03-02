@@ -2,7 +2,6 @@ package connector
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"strconv"
 	"sync"
@@ -68,10 +67,8 @@ func (f *FakeConnector) Stop() {
 
 func (f *FakeConnector) PairInfo(base, quote string) (PairInfo, error) {
 	return PairInfo{
-		PairName:            fmt.Sprintf("%s%s", base, quote),
 		BasePricePrecision:  8,
 		QuotePricePrecision: 8,
-		BaseMinVolume:       0.001,
 	}, nil
 }
 
@@ -118,8 +115,6 @@ func (f *FakeConnector) OrdersDetails(appID int) []Order {
 }
 
 func (f *FakeConnector) run() {
-	f.logger.Info("--- FakeConnector connector run")
-
 	f.m.Lock()
 	defer f.m.Unlock()
 
