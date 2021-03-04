@@ -126,6 +126,7 @@ func (t *Trader) reconcileStorageTrades() error {
 
 		switch ord.status {
 		case connector.OrderStatusNew:
+		case connector.OrderStatusPartiallyFilled:
 			continue
 		case connector.OrderStatusExecuted:
 			if trd.status == statusBuyLimitPublished {

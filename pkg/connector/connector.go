@@ -7,9 +7,10 @@ const (
 	OrderSideBuy  = "BUY"
 	OrderSideSell = "SELL"
 
-	OrderStatusNew      = "NEW"
-	OrderStatusExecuted = "EXECUTED"
-	OrderStatusNotFound = "NOT_FOUND"
+	OrderStatusNew             = "NEW"
+	OrderStatusExecuted        = "EXECUTED"
+	OrderStatusPartiallyFilled = "PARTIALLY_FILLED"
+	OrderStatusNotFound        = "NOT_FOUND"
 )
 
 type Connector interface {

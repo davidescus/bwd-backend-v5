@@ -300,7 +300,7 @@ func (b *Binance) openOrders() (map[int][]Order, error) {
 		order, err := b.castExchangeOrder(exhOrder)
 		if err != nil {
 			jsonOrder, _ := json.Marshal(exhOrder)
-			return orders, fmt.Errorf("faild to cast exchange order to connector order on: %s, err: %w", jsonOrder, err)
+			return orders, fmt.Errorf("failed to cast exchange order to connector order on: %s, err: %w", jsonOrder, err)
 		}
 
 		orders[appID] = append(orders[appID], order)
@@ -322,7 +322,7 @@ func (b *Binance) castExchangeOrder(order *binance.Order) (Order, error) {
 	case OrderTypeLimit:
 		orderType = OrderTypeLimit
 	default:
-		return Order{}, errors.New(fmt.Sprintf("unknown order type: %pair", order.Type))
+		return Order{}, errors.New(fmt.Sprintf("unknown order type: %s", order.Type))
 	}
 
 	var side string
@@ -332,17 +332,19 @@ func (b *Binance) castExchangeOrder(order *binance.Order) (Order, error) {
 	case binance.SideTypeBuy:
 		side = OrderSideBuy
 	default:
-		return Order{}, errors.New(fmt.Sprintf("unknown order side: %pair", order.Side))
+		return Order{}, errors.New(fmt.Sprintf("unknown order side: %s", order.Side))
 	}
 
 	var status string
 	switch order.Status {
 	case binance.OrderStatusTypeNew:
 		status = OrderStatusNew
+	case binance.OrderStatusTypePartiallyFilled:
+		status = OrderStatusPartiallyFilled
 	case binance.OrderStatusTypeFilled:
 		status = OrderStatusExecuted
 	default:
-		return Order{}, errors.New(fmt.Sprintf("unknown order side: %pair", order.Status))
+		return Order{}, errors.New(fmt.Sprintf("unknown order side: %s", order.Status))
 	}
 
 	volume, err := strconv.ParseFloat(order.OrigQuantity, 64)
