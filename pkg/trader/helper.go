@@ -5,7 +5,26 @@ import (
 	"bwd/pkg/storage"
 )
 
-func castTradeToStorageTrade(trade trade) storage.Trade {
+func castStorageTrade(st storage.Trade) trade {
+	return trade{
+		id:                   st.ID,
+		appID:                st.AppID,
+		openBasePrice:        st.OpenBasePrice,
+		closeBasePrice:       st.CloseBasePrice,
+		openType:             st.OpenType,
+		closeType:            st.CloseType,
+		baseVolume:           st.BaseVolume,
+		buyOrderID:           st.BuyOrderID,
+		sellOrderID:          st.SellOrderID,
+		status:               st.Status,
+		convertedSellLimitAt: st.ConvertedSellLimitAt,
+		closedAt:             st.ClosedAt,
+		updatedAt:            st.UpdatedAt,
+		createdAt:            st.CreatedAt,
+	}
+}
+
+func castToStorageTrade(trade trade) storage.Trade {
 	return storage.Trade{
 		ID:                   trade.id,
 		AppID:                trade.appID,
@@ -24,7 +43,7 @@ func castTradeToStorageTrade(trade trade) storage.Trade {
 	}
 }
 
-func castConnectorOrderToTraderOrder(o connector.Order) order {
+func castOrder(o connector.Order) order {
 	return order{
 		id:        o.ID,
 		base:      o.Base,

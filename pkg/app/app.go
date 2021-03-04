@@ -1,10 +1,5 @@
 package app
 
-// package app is responsible for:
-// - init compounder
-// - init stepper
-// - loop at specific interval and run trader
-
 import (
 	"bwd/pkg/compound"
 	"bwd/pkg/connector"
@@ -22,7 +17,8 @@ import (
 )
 
 const (
-	stepsTypeFixInterval = "FIX_INTERVAL"
+	stepperTypeFixInterval = "FIX_INTERVAL"
+	compounderTypeNone     = "NONE"
 )
 
 type ConfigApp struct {
@@ -65,6 +61,7 @@ type App struct {
 	cancelFunc         func()
 	stepper            step.Stepper
 	compounder         compound.Compounder
+	trader             *trader.Trader
 }
 
 type pair struct {
@@ -94,6 +91,7 @@ type pairInfo struct {
 	quoteMinVolume float64
 }
 
+// New will return a pointer to an configured app
 func New(cfg *ConfigApp, logger *logrus.Logger) *App {
 	appCtx, cancel := context.WithCancel(context.Background())
 
@@ -132,6 +130,11 @@ func New(cfg *ConfigApp, logger *logrus.Logger) *App {
 	}
 }
 
+// Start will should care about:
+// get infos, precisions, qty for pair from exchange
+// validate app if it is properly configured
+// init trader dependencies (stepper, compounder)
+// init trader and run it on loop (at tick interval)
 func (a *App) Start() error {
 	if err := a.exchangePairInfo(); err != nil {
 		return err
@@ -149,6 +152,8 @@ func (a *App) Start() error {
 		return err
 	}
 
+	a.initTrader()
+
 	go func() {
 		for {
 			select {
@@ -156,7 +161,7 @@ func (a *App) Start() error {
 				a.doneSig <- struct{}{}
 				return
 			default:
-				a.run()
+				a.trader.Run()
 				<-time.After(a.interval)
 			}
 		}
@@ -167,6 +172,7 @@ func (a *App) Start() error {
 	return nil
 }
 
+// Stop will wait for trader to finish
 func (a *App) Stop() {
 	a.logger.Infof("appID: %d stopping ...", a.id)
 	a.cancelFunc()
@@ -254,7 +260,7 @@ func (a *App) exchangePairInfo() error {
 
 func (a *App) initStepper() error {
 	switch a.steps.kind {
-	case stepsTypeFixInterval:
+	case stepperTypeFixInterval:
 		cfgStepsFixInterval := step.ConfigStepsFixInterval{
 			MinPriceAllowed: a.pairInfo.basePrice.min,
 			MaxPriceAllowed: a.pairInfo.basePrice.max,
@@ -269,7 +275,7 @@ func (a *App) initStepper() error {
 		if err != nil {
 			cfgJson, _ := json.Marshal(cfgStepsFixInterval)
 			return fmt.Errorf("cound not init stepper: %s with config: %s, err: %s",
-				stepsTypeFixInterval,
+				stepperTypeFixInterval,
 				cfgJson,
 				err.Error(),
 			)
@@ -284,7 +290,7 @@ func (a *App) initStepper() error {
 
 func (a *App) initCompounder() error {
 	switch a.compound.kind {
-	case "NONE":
+	case compounderTypeNone:
 		a.compounder = compound.NewCompoundNone(&compound.ConfigNone{
 			InitialStepQuoteVolume: a.stepQuoteVolume,
 			MinBaseLotAllowed:      a.pairInfo.baseLot.min,
@@ -292,12 +298,12 @@ func (a *App) initCompounder() error {
 			BaseLotTick:            a.pairInfo.baseLot.tick,
 		})
 	default:
-		return fmt.Errorf("unknown stepper type: %s", a.steps.kind)
+		return fmt.Errorf("unknown compounder type: %s", a.compound.kind)
 	}
 	return nil
 }
 
-func (a *App) run() {
+func (a *App) initTrader() {
 	cfgTrader := &trader.ConfigTrader{
 		AppID:      a.id,
 		Storer:     a.storer,
@@ -307,7 +313,6 @@ func (a *App) run() {
 		Base:       a.pair.base,
 		Quote:      a.pair.quote,
 	}
-	t := trader.New(cfgTrader, a.logger)
 
-	t.Run()
+	a.trader = trader.New(cfgTrader, a.logger)
 }

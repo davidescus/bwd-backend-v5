@@ -58,11 +58,16 @@ func New(cfg *ConfigTrader, logger *logrus.Logger) *Trader {
 }
 
 func (t *Trader) Run() {
-	// do reconciliation
-	if err := t.reconcileFromExchangeToStorage(); err != nil {
+	// reconciliation level 1
+	// apply exchange modifications on storage by changing storage trades statuses
+	// according to current exchange orders statuses
+	if err := t.reconcileStorageTrades(); err != nil {
 		t.logger.WithError(err).Error("reconcileFromExchangeToStorage with error")
 		return
 	}
+
+	// TODO reconciliation level 2
+	// detect and cancel exchange orders which are not associated with a published trade
 
 	// ??? just change statuses
 	if err := t.moveTradesFromExecutedOnNextStatus(); err != nil {
@@ -89,20 +94,7 @@ func (t *Trader) Run() {
 	}
 }
 
-func (t *Trader) reconcileFromExchangeToStorage() error {
-	// level 1 reconcile trades orders (source of true: exchange)
-	err := t.reconcileTradesIndividually()
-	if err != nil {
-		return err
-	}
-
-	// level 2 reconcile existing orders on exchange (cancel mistakes orders)
-	// TODO to implement second level of reconciliation
-
-	return nil
-}
-
-func (t *Trader) reconcileTradesIndividually() error {
+func (t *Trader) reconcileStorageTrades() error {
 	trades, err := t.activeTrades()
 	if err != nil {
 		return err
@@ -130,7 +122,7 @@ func (t *Trader) reconcileTradesIndividually() error {
 			return err
 		}
 
-		ord := castConnectorOrderToTraderOrder(o)
+		ord := castOrder(o)
 
 		switch ord.status {
 		case connector.OrderStatusNew:
@@ -143,7 +135,7 @@ func (t *Trader) reconcileTradesIndividually() error {
 				trd.closeType = ord.orderType
 				trd.status = statusSellLimitExecuted
 			}
-			err := t.storer.UpdateTrade(castTradeToStorageTrade(trd))
+			err := t.storer.UpdateTrade(castToStorageTrade(trd))
 			if err != nil {
 				return err
 			}
@@ -164,7 +156,6 @@ func (t *Trader) moveTradesFromExecutedOnNextStatus() error {
 	}
 
 	for _, trd := range trades {
-		oldStatus := trd.status
 		switch trd.status {
 		case statusBuyLimitExecuted:
 			trd.convertedSellLimitAt = time.Now().UTC()
@@ -176,11 +167,9 @@ func (t *Trader) moveTradesFromExecutedOnNextStatus() error {
 			continue
 		}
 
-		err := t.storer.UpdateTrade(castTradeToStorageTrade(trd))
-		if err != nil {
+		if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
 			return err
 		}
-		t.logger.Infof("tradeID: %d moved from: %s to: %s", trd.id, oldStatus, trd.status)
 	}
 
 	return nil
@@ -242,7 +231,7 @@ func (t *Trader) markForPublishUnPublish() error {
 			continue
 		}
 
-		if err := t.storer.UpdateTrade(castTradeToStorageTrade(trd)); err != nil {
+		if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
 			return err
 		}
 	}
@@ -259,11 +248,11 @@ func (t *Trader) reconcileFromStorageToExchange() error {
 	for _, trd := range trades {
 		switch trd.status {
 		case statusBuyLimitWantsPublish:
-			if err := t.addBuyLimitOrder(trd); err != nil {
+			if err := t.publishBuyLimitOrder(trd); err != nil {
 				return err
 			}
 		case statusSellLimitWantsPublish:
-			if err := t.addSellLimitOrder(trd); err != nil {
+			if err := t.publishSellLimitOrder(trd); err != nil {
 				return err
 			}
 		default:
@@ -274,38 +263,14 @@ func (t *Trader) reconcileFromStorageToExchange() error {
 	return nil
 }
 
-func (t *Trader) addBuyLimitOrder(trade trade) error {
-	order := connector.Order{
-		Base:      t.base,
-		Quote:     t.quote,
-		OrderType: connector.OrderTypeLimit,
-		Side:      connector.OrderSideBuy,
-		Price:     trade.openBasePrice,
-		Volume:    trade.baseVolume,
-	}
-
-	orderID, err := t.connector.AddOrder(t.appID, order)
-	if err != nil {
-		return err
-	}
-
-	trade.buyOrderID = orderID
-	trade.status = statusBuyLimitPublished
-	if err := t.storer.UpdateTrade(castTradeToStorageTrade(trade)); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (t *Trader) addSellLimitOrder(trade trade) error {
+func (t *Trader) publishBuyLimitOrder(trd trade) error {
 	ord := connector.Order{
 		Base:      t.base,
 		Quote:     t.quote,
 		OrderType: connector.OrderTypeLimit,
-		Side:      connector.OrderSideSell,
-		Price:     trade.closeBasePrice,
-		Volume:    trade.baseVolume,
+		Side:      connector.OrderSideBuy,
+		Price:     trd.openBasePrice,
+		Volume:    trd.baseVolume,
 	}
 
 	orderID, err := t.connector.AddOrder(t.appID, ord)
@@ -313,9 +278,33 @@ func (t *Trader) addSellLimitOrder(trade trade) error {
 		return err
 	}
 
-	trade.sellOrderID = orderID
-	trade.status = statusSellLimitPublished
-	if err := t.storer.UpdateTrade(castTradeToStorageTrade(trade)); err != nil {
+	trd.buyOrderID = orderID
+	trd.status = statusBuyLimitPublished
+	if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (t *Trader) publishSellLimitOrder(trd trade) error {
+	ord := connector.Order{
+		Base:      t.base,
+		Quote:     t.quote,
+		OrderType: connector.OrderTypeLimit,
+		Side:      connector.OrderSideSell,
+		Price:     trd.closeBasePrice,
+		Volume:    trd.baseVolume,
+	}
+
+	orderID, err := t.connector.AddOrder(t.appID, ord)
+	if err != nil {
+		return err
+	}
+
+	trd.sellOrderID = orderID
+	trd.status = statusSellLimitPublished
+	if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
 		return err
 	}
 
@@ -348,22 +337,7 @@ func (t *Trader) activeTrades() ([]trade, error) {
 	}
 
 	for _, v := range res {
-		trades = append(trades, trade{
-			id:                   v.ID,
-			appID:                v.AppID,
-			openBasePrice:        v.OpenBasePrice,
-			closeBasePrice:       v.CloseBasePrice,
-			openType:             v.OpenType,
-			closeType:            v.CloseType,
-			baseVolume:           v.BaseVolume,
-			buyOrderID:           v.BuyOrderID,
-			sellOrderID:          v.SellOrderID,
-			status:               v.Status,
-			convertedSellLimitAt: v.ConvertedSellLimitAt,
-			closedAt:             v.ClosedAt,
-			updatedAt:            v.UpdatedAt,
-			createdAt:            v.CreatedAt,
-		})
+		trades = append(trades, castStorageTrade(v))
 	}
 
 	return trades, nil
