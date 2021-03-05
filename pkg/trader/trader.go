@@ -34,7 +34,7 @@ type ConfigTrader struct {
 }
 
 type Trader struct {
-	logger     *logrus.Logger
+	logger     logrus.FieldLogger
 	appID      int
 	base       string
 	quote      string
@@ -44,9 +44,9 @@ type Trader struct {
 	compounder compound.Compounder
 }
 
-func New(cfg *ConfigTrader, logger *logrus.Logger) *Trader {
+func New(cfg *ConfigTrader, logger logrus.FieldLogger) *Trader {
 	return &Trader{
-		logger:     logger,
+		logger:     logger.WithField("module", "trader"),
 		appID:      cfg.AppID,
 		base:       cfg.Base,
 		quote:      cfg.Quote,
@@ -58,6 +58,8 @@ func New(cfg *ConfigTrader, logger *logrus.Logger) *Trader {
 }
 
 func (t *Trader) Run() {
+	t.logger.Debug("run trader")
+
 	// reconciliation level 1
 	// apply exchange modifications on storage by changing storage trades statuses
 	// according to current exchange orders statuses

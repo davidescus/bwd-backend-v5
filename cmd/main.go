@@ -2,14 +2,18 @@ package main
 
 import (
 	"bwd/pkg/bwd"
+	syslog2 "bwd/pkg/utils"
 	"context"
 	"errors"
+	"log"
+	"log/syslog"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"github.com/ilyakaznacheev/cleanenv"
+
 	"github.com/sirupsen/logrus"
 )
 
@@ -37,15 +41,15 @@ func (c *Config) validate() error {
 }
 
 func main() {
-	logger := logger()
+	log := logger()
 
-	// cfg
 	cfg := &Config{}
 	if err := cleanenv.ReadEnv(cfg); err != nil {
-		logger.WithError(err).Fatal("can not read env vars")
+		log.WithError(err).Fatal("can not read env vars")
 	}
+
 	if err := cfg.validate(); err != nil {
-		logger.WithError(err).Fatal("can not validate config")
+		log.WithError(err).Fatalf("invalid config: %+v", cfg)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -57,41 +61,50 @@ func main() {
 		StorageConnectionString: cfg.StorageConnectionString,
 	}
 
-	b := bwd.New(ctx, configBwd, logger)
+	b := bwd.New(ctx, configBwd, log)
 	err := b.Start()
 	if err != nil {
-		logger.WithError(err).Fatal("unsuccessful start, everything stopped.")
+		log.WithError(err).Fatal("unsuccessful start, everything stopped.")
 	}
 
-	logger.Info("successful start, press Ctrl + C to graceful shutdown")
+	log.Info("successful start, press Ctrl + C to graceful shutdown")
 	sigint := make(chan os.Signal)
 	signal.Notify(sigint, syscall.SIGINT, syscall.SIGTERM)
 	<-sigint
 
-	logger.Info("bwd stopping ...")
+	log.Info("bwd stopping ...")
 	cancel()
 	b.Wait()
 
-	logger.Info("bwd successful stop.")
+	log.Info("bwd successful stop.")
 }
 
 type UTCFormatter struct {
 	logrus.Formatter
 }
 
-func logger() *logrus.Logger {
-	logger := logrus.New()
-	logger.SetOutput(os.Stdout)
-	logger.SetFormatter(
+func logger() logrus.FieldLogger {
+	l := logrus.New()
+	l.SetOutput(os.Stdout)
+	l.SetFormatter(
 		UTCFormatter{
 			&logrus.TextFormatter{
 				TimestampFormat: time.RFC3339,
 				FullTimestamp:   true,
-				DisableColors:   false,
-				DisableSorting:  false,
+				DisableColors:   true,
+				DisableSorting:  true,
+				ForceQuote:      true,
 			},
 		},
 	)
 
-	return logger
+	l.SetLevel(logrus.DebugLevel)
+
+	syslogOutput, er := syslog2.NewSyslogHook("", "", syslog.LOG_INFO|syslog.LOG_DAEMON, "")
+	if er != nil {
+		log.Fatal("main: unable to setup syslog output")
+	}
+	l.AddHook(syslogOutput)
+
+	return l.WithField("app", "bwd").WithField("module", "main")
 }

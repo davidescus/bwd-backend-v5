@@ -24,7 +24,7 @@ type BinanceConfig struct {
 type Binance struct {
 	ctx        context.Context
 	cancelFunc func()
-	logger     *logrus.Logger
+	logger     logrus.FieldLogger
 	connection *binance.Client
 	interval   time.Duration
 	doneSig    chan struct{}
@@ -37,7 +37,7 @@ type symbol struct {
 	base, quote string
 }
 
-func NewBinance(cfg *BinanceConfig, logger *logrus.Logger) *Binance {
+func NewBinance(cfg *BinanceConfig, logger logrus.FieldLogger) *Binance {
 	connectorCtx, cancel := context.WithCancel(context.Background())
 
 	return &Binance{
@@ -81,8 +81,6 @@ func (b *Binance) Start() error {
 			}
 		}
 	}()
-
-	b.logger.Info("connector Binance successful start")
 
 	return nil
 }

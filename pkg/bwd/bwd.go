@@ -1,10 +1,5 @@
 package bwd
 
-// bwd is responsible for:
-// - init storage
-// - configure and start/stop connectors
-// - configure and start/stop apps
-
 import (
 	"bwd/pkg/app"
 	"bwd/pkg/connector"
@@ -32,7 +27,7 @@ type ConfigBwd struct {
 
 type Bwd struct {
 	ctx                     context.Context
-	logger                  *logrus.Logger
+	logger                  logrus.FieldLogger
 	storer                  storage.Storer
 	interval                time.Duration
 	slackHook               string
@@ -43,10 +38,10 @@ type Bwd struct {
 	isDone                  chan struct{}
 }
 
-func New(ctx context.Context, cfg *ConfigBwd, logger *logrus.Logger) *Bwd {
+func New(ctx context.Context, cfg *ConfigBwd, logger logrus.FieldLogger) *Bwd {
 	return &Bwd{
 		ctx:                     ctx,
-		logger:                  logger,
+		logger:                  logger.WithField("module", "bwd"),
 		interval:                cfg.Interval,
 		slackHook:               cfg.SlackHook,
 		webBindingPort:          cfg.WebBindingPort,
@@ -61,7 +56,7 @@ func (b *Bwd) Start() error {
 	// create storage instance
 	sql, err := storage.NewMysql(b.storageConnectionString)
 	if err != nil {
-		return err
+		return fmt.Errorf("bwd create mysql instance fail, err: %w", err)
 	}
 
 	b.storer = sql
@@ -99,9 +94,10 @@ func (b *Bwd) Wait() {
 }
 
 func (b *Bwd) run() {
+	b.logger.Debug("run bwd")
 	apps, err := b.storer.Apps()
 	if err != nil {
-		b.logger.WithError(err).Error("storage Apps() error")
+		b.logger.WithError(err).Errorf("fail fetch apps from storage")
 		return
 	}
 
@@ -109,16 +105,19 @@ func (b *Bwd) run() {
 		// create connector if not exists
 		_, ok := b.connectors[a.Exchange]
 		if !ok {
+			b.logger.WithField("dataconnector", a.Exchange).Info("try create connector")
 			c, err := b.createConnector(a.Exchange)
 			if err != nil {
-				b.logger.WithError(err).Error("could not init connector")
+				b.logger.WithError(err).Errorf("fail to init connector: %s", a.Exchange)
 				continue
 			}
+			b.logger.WithField("dataconnector", a.Exchange).Info("success connector created")
 
 			if err = c.Start(); err != nil {
-				b.logger.WithError(err).Error("could not start connector: %s", a.Exchange)
+				b.logger.WithError(err).Error("fail to start connector: %s", a.Exchange)
 				continue
 			}
+			b.logger.WithField("dataconnector", a.Exchange).Info("success connector start")
 			b.connectors[a.Exchange] = c
 		}
 
@@ -148,27 +147,31 @@ func (b *Bwd) createConnector(exchange string) (connector.Connector, error) {
 }
 
 func (b *Bwd) applyAppConfig(appCfg storage.App) {
+	appJson, _ := json.Marshal(appCfg)
+	logger := b.logger.WithField("dataapp", string(appJson))
+
 	switch appCfg.Status {
 	case "ACTIVE":
 		// start app only if not exists in running apps
 		if _, ok := b.runningApps[appCfg.ID]; !ok {
+			logger.Info("try start app")
 			a := b.createApp(appCfg)
-			err := a.Start()
-			if err != nil {
-				appJson, _ := json.Marshal(appCfg)
-				b.logger.WithError(err).Error("could not start application, appDetails: %s", string(appJson))
+			if err := a.Start(); err != nil {
+				logger.WithError(err).Error("fail start app")
 				return
 			}
 			b.runningApps[appCfg.ID] = a
+			logger.Info("success start app")
 		}
 	case "INACTIVE":
 		if a, ok := b.runningApps[appCfg.ID]; ok {
+			logger.Info("try stop app")
 			a.Stop()
 			delete(b.runningApps, appCfg.ID)
+			logger.Info("success stop app")
 		}
 	default:
-		appJson, _ := json.Marshal(appCfg)
-		b.logger.Errorf("unknown app status, app: %s", appJson)
+		logger.Errorf("unknown app status")
 	}
 }
 

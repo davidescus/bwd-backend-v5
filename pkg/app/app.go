@@ -43,7 +43,7 @@ type ConfigApp struct {
 
 type App struct {
 	ctx                context.Context
-	logger             *logrus.Logger
+	logger             logrus.FieldLogger
 	storer             storage.Storer
 	connector          connector.Connector
 	interval           time.Duration
@@ -92,13 +92,13 @@ type pairInfo struct {
 }
 
 // New will return a pointer to an configured app
-func New(cfg *ConfigApp, logger *logrus.Logger) *App {
+func New(cfg *ConfigApp, logger logrus.FieldLogger) *App {
 	appCtx, cancel := context.WithCancel(context.Background())
 
 	return &App{
 		ctx:        appCtx,
 		cancelFunc: cancel,
-		logger:     logger,
+		logger:     logger.WithField("module", "app").WithField("appid", cfg.ID),
 		storer:     cfg.Storer,
 		connector:  cfg.Connector,
 		interval:   cfg.Interval,
@@ -137,25 +137,27 @@ func New(cfg *ConfigApp, logger *logrus.Logger) *App {
 // init trader and run it on loop (at tick interval)
 func (a *App) Start() error {
 	if err := a.exchangePairInfo(); err != nil {
-		return err
+		return fmt.Errorf("fail exchangePairInfo, err: %w", err)
 	}
 
 	if err := a.validate(); err != nil {
-		return err
+		return fmt.Errorf("fail validate, err: %w", err)
 	}
 
 	if err := a.initStepper(); err != nil {
-		return err
+		return fmt.Errorf("fail initStepper, err: %w", err)
 	}
 
 	if err := a.initCompounder(); err != nil {
-		return err
+		return fmt.Errorf("fail initCompounder, err: %w", err)
 	}
 
 	a.initTrader()
 
 	go func() {
 		for {
+			a.logger.Debug("run app")
+
 			select {
 			case <-a.ctx.Done():
 				a.doneSig <- struct{}{}
@@ -167,18 +169,13 @@ func (a *App) Start() error {
 		}
 	}()
 
-	a.logger.Infof("appID: %d starts with success", a.id)
-
 	return nil
 }
 
 // Stop will wait for trader to finish
 func (a *App) Stop() {
-	a.logger.Infof("appID: %d stopping ...", a.id)
 	a.cancelFunc()
-
 	<-a.doneSig
-	a.logger.Infof("appID: %d stops with success", a.id)
 }
 
 func (a *App) validate() error {

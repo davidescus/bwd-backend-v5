@@ -17,14 +17,14 @@ type FakeConnectorConfig struct {
 type FakeConnector struct {
 	ctx        context.Context
 	cancelFunc func()
-	logger     *logrus.Logger
+	logger     logrus.FieldLogger
 	interval   time.Duration
 	doneSig    chan struct{}
 	m          sync.Mutex
 	orders     map[int][]Order
 }
 
-func NewFakeConnector(cfg *FakeConnectorConfig, logger *logrus.Logger) *FakeConnector {
+func NewFakeConnector(cfg *FakeConnectorConfig, logger logrus.FieldLogger) *FakeConnector {
 	connectorCtx, cancel := context.WithCancel(context.Background())
 
 	return &FakeConnector{
@@ -51,8 +51,6 @@ func (f *FakeConnector) Start() error {
 			}
 		}
 	}()
-
-	f.logger.Infof("connector FakeConnector successful start")
 
 	return nil
 }
