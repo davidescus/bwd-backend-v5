@@ -155,7 +155,7 @@ func (s *Mysql) ActiveTrades(appID int) ([]Trade, error) {
 			&createdAt,
 		)
 		if err != nil {
-			return trades, err
+			return []Trade{}, err
 		}
 
 		if convertedSellLimitAt.Valid {

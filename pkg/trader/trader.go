@@ -63,8 +63,7 @@ func (t *Trader) Run() {
 	// reconciliation level 1
 	// apply exchange modifications on storage by changing storage trades statuses
 	// according to current exchange orders statuses
-	if err := t.reconcileStorageTrades(); err != nil {
-		t.logger.WithError(err).Error("reconcileFromExchangeToStorage with error")
+	if ok := t.reconcileStorageTrades(); !ok {
 		return
 	}
 
@@ -72,38 +71,41 @@ func (t *Trader) Run() {
 	// detect and cancel exchange orders which are not associated with a published trade
 
 	// ??? just change statuses
-	if err := t.moveTradesFromExecutedOnNextStatus(); err != nil {
-		t.logger.WithError(err).Error("moveTradesFromExecutedOnNextStatus with error")
+	if ok := t.moveTradesFromExecutedOnNextStatus(); !ok {
 		return
 	}
 
 	// create missing trades
-	if err := t.addMissingTrades(); err != nil {
-		t.logger.WithError(err).Error("addMissingTrades with error")
+	if ok := t.addMissingTrades(); !ok {
 		return
 	}
 
 	// decide who need to publish / unPublish
-	if err := t.markForPublishUnPublish(); err != nil {
-		t.logger.WithError(err).Error("markForPublishUnPublish with error")
+	if ok := t.markForPublishUnPublish(); !ok {
 		return
 	}
 
 	// publish / unPublish orders for trades on exchange
-	if err := t.reconcileFromStorageToExchange(); err != nil {
-		t.logger.WithError(err).Error("reconcileFromStorageToExchange with error")
+	if ok := t.reconcileFromStorageToExchange(); ok {
 		return
 	}
 }
 
-func (t *Trader) reconcileStorageTrades() error {
+func (t *Trader) reconcileStorageTrades() bool {
 	trades, err := t.activeTrades()
 	if err != nil {
-		return err
+		t.logger.WithError(err).Error("reconcileStorageTrades: fail fetch active trades")
+		return false
 	}
+
+	var isOk = true
 
 	for _, trd := range trades {
 		var orderID string
+
+		logger := t.logger.
+			WithField("datatrade", fmt.Sprintf("%+v", trd)).
+			WithField("datatradeid", trd.id)
 
 		switch trd.status {
 		case statusBuyLimitPublished:
@@ -121,13 +123,17 @@ func (t *Trader) reconcileStorageTrades() error {
 		}
 		o, err := t.connector.OrderDetails(t.appID, connectorOrder)
 		if err != nil {
-			return err
+			logger.WithError(err).Error("reconcileStorageTrades: fail connector OrderDetails")
+			isOk = false
+			continue
 		}
 
 		ord := castOrder(o)
+		logger.WithField("dataorder", fmt.Sprintf("%+v", ord))
 
 		switch ord.status {
 		case connector.OrderStatusNew:
+			continue
 		case connector.OrderStatusPartiallyFilled:
 			continue
 		case connector.OrderStatusExecuted:
@@ -138,27 +144,42 @@ func (t *Trader) reconcileStorageTrades() error {
 				trd.closeType = ord.orderType
 				trd.status = statusSellLimitExecuted
 			}
+
+			logger.WithField("dataupdatedtrade", fmt.Sprintf("%+v", trd))
+
 			err := t.storer.UpdateTrade(castToStorageTrade(trd))
 			if err != nil {
-				return err
+				logger.WithError(err).Error("reconcileStorageTrades: fail update trade")
+				isOk = false
+				continue
 			}
-			fmt.Println("orders executed, trade moved to next status")
+
+			logger.Debug("success reconcile trade")
+
 		default:
-			return fmt.Errorf("unknown connectorOrder status: %s", ord.status)
+			isOk = false
+			logger.Error("unknown order status")
 		}
 	}
 
-	return nil
+	return isOk
 }
 
 // just move from executed on next status
-func (t *Trader) moveTradesFromExecutedOnNextStatus() error {
+func (t *Trader) moveTradesFromExecutedOnNextStatus() bool {
 	trades, err := t.activeTrades()
 	if err != nil {
-		return err
+		t.logger.WithError(err).Error("moveTradesFromExecutedOnNextStatus: fail fetch active trades")
+		return false
 	}
 
+	var isOk = true
+
 	for _, trd := range trades {
+		logger := t.logger.
+			WithField("datatrade", fmt.Sprintf("%+v", trd)).
+			WithField("datatradeid", trd.id)
+
 		switch trd.status {
 		case statusBuyLimitExecuted:
 			trd.convertedSellLimitAt = time.Now().UTC()
@@ -170,20 +191,27 @@ func (t *Trader) moveTradesFromExecutedOnNextStatus() error {
 			continue
 		}
 
+		logger.WithField("updatedtrade", fmt.Sprintf("%+v", trd))
+
 		if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
-			return err
+			logger.WithError(err).Error("moveTradesFromExecutedOnNextStatus: fail update trade")
+			isOk = false
+			continue
 		}
 	}
 
-	return nil
+	return isOk
 }
 
-func (t *Trader) addMissingTrades() error {
+func (t *Trader) addMissingTrades() bool {
 	steps := t.stepper.Steps()
 	trades, err := t.activeTrades()
 	if err != nil {
-		return err
+		t.logger.WithError(err).Error("addMissingTrades: fail fetch active trades")
+		return false
 	}
+
+	isOk := true
 
 	for _, s := range steps {
 		var hasTrade bool
@@ -193,38 +221,53 @@ func (t *Trader) addMissingTrades() error {
 			}
 		}
 
-		if !hasTrade {
-			volume, err := t.compounder.Volume(s)
-			if err != nil {
-				return err
-			}
+		if hasTrade {
+			continue
+		}
 
-			trd := storage.Trade{
-				AppID:          t.appID,
-				OpenBasePrice:  s,
-				CloseBasePrice: t.stepper.ClosePrice(s),
-				BaseVolume:     volume,
-				Status:         statusBuyLimit,
-				CreatedAt:      time.Now().UTC(),
-			}
-			if err := t.storer.AddTrade(trd); err != nil {
-				return err
-			}
+		logger := t.logger.WithField("step", s)
+
+		volume, err := t.compounder.Volume(s)
+		if err != nil {
+			logger.WithError(err).Error("fail calculate compound volume")
+			isOk = false
+			continue
+		}
+
+		trd := storage.Trade{
+			AppID:          t.appID,
+			OpenBasePrice:  s,
+			CloseBasePrice: t.stepper.ClosePrice(s),
+			BaseVolume:     volume,
+			Status:         statusBuyLimit,
+			CreatedAt:      time.Now().UTC(),
+		}
+		if err := t.storer.AddTrade(trd); err != nil {
+			logger.WithError(err).
+				WithField("datatrade", fmt.Sprintf("%+v", trd)).
+				Error("fail insert trade")
+			isOk = false
+			continue
 		}
 	}
 
-	return nil
+	return isOk
 }
 
 // this should decide which orders should publish / unPublish on exchange
-func (t *Trader) markForPublishUnPublish() error {
+func (t *Trader) markForPublishUnPublish() bool {
 	trades, err := t.activeTrades()
 	if err != nil {
-		return err
+		t.logger.WithError(err).Error("markForPublishUnPublish: fail fetch active trades")
+		return false
 	}
+
+	isOk := true
 
 	// simple version, will publish all orders
 	for _, trd := range trades {
+		logger := t.logger.WithField("datatrade", fmt.Sprintf("%+v", trd))
+
 		switch trd.status {
 		case statusBuyLimit:
 			trd.status = statusBuyLimitWantsPublish
@@ -235,38 +278,44 @@ func (t *Trader) markForPublishUnPublish() error {
 		}
 
 		if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
-			return err
+			logger.WithError(err).Error("markForPublishUnPublish: fail update trade")
+			isOk = false
 		}
 	}
 
-	return nil
+	return isOk
 }
 
-func (t *Trader) reconcileFromStorageToExchange() error {
+func (t *Trader) reconcileFromStorageToExchange() bool {
 	trades, err := t.activeTrades()
 	if err != nil {
-		return err
+		t.logger.WithError(err).Error("reconcileFromStorageToExchange: fail fetch active trades")
+		return false
 	}
+
+	isOk := true
 
 	for _, trd := range trades {
 		switch trd.status {
 		case statusBuyLimitWantsPublish:
-			if err := t.publishBuyLimitOrder(trd); err != nil {
-				return err
+			if ok := t.publishBuyLimitOrder(trd); !ok {
+				isOk = false
 			}
 		case statusSellLimitWantsPublish:
-			if err := t.publishSellLimitOrder(trd); err != nil {
-				return err
+			if ok := t.publishSellLimitOrder(trd); !ok {
+				isOk = false
 			}
 		default:
 			continue
 		}
 	}
 
-	return nil
+	return isOk
 }
 
-func (t *Trader) publishBuyLimitOrder(trd trade) error {
+func (t *Trader) publishBuyLimitOrder(trd trade) bool {
+	logger := t.logger.WithField("datatrade", fmt.Sprintf("%+v", trd))
+
 	ord := connector.Order{
 		Base:      t.base,
 		Quote:     t.quote,
@@ -276,21 +325,29 @@ func (t *Trader) publishBuyLimitOrder(trd trade) error {
 		Volume:    trd.baseVolume,
 	}
 
+	logger.WithField("dataorder", fmt.Sprintf("%+v", ord))
+
 	orderID, err := t.connector.AddOrder(t.appID, ord)
 	if err != nil {
-		return err
+		logger.WithError(err).Error("publishBuyLimitOrder: fail add exchange order")
+		return false
 	}
 
 	trd.buyOrderID = orderID
 	trd.status = statusBuyLimitPublished
+	logger.WithField("dataupdatedtrade", fmt.Sprintf("%+v", trd))
+
 	if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
-		return err
+		logger.WithError(err).Error("publishBuyLimitOrder: fail update trade")
+		return false
 	}
 
-	return nil
+	return true
 }
 
-func (t *Trader) publishSellLimitOrder(trd trade) error {
+func (t *Trader) publishSellLimitOrder(trd trade) bool {
+	logger := t.logger.WithField("datatrade", fmt.Sprintf("%+v", trd))
+
 	ord := connector.Order{
 		Base:      t.base,
 		Quote:     t.quote,
@@ -300,18 +357,24 @@ func (t *Trader) publishSellLimitOrder(trd trade) error {
 		Volume:    trd.baseVolume,
 	}
 
+	logger.WithField("dataorder", fmt.Sprintf("%+v", ord))
+
 	orderID, err := t.connector.AddOrder(t.appID, ord)
 	if err != nil {
-		return err
+		logger.WithError(err).Error("publishSellLimitOrder: fail add exchange order")
+		return false
 	}
 
 	trd.sellOrderID = orderID
 	trd.status = statusSellLimitPublished
+	logger.WithField("dataupdatedtrade", fmt.Sprintf("%+v", trd))
+
 	if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
-		return err
+		logger.WithError(err).Error("publishSellLimitOrder: fail update trade")
+		return false
 	}
 
-	return nil
+	return true
 }
 
 type trade struct {
@@ -336,7 +399,7 @@ func (t *Trader) activeTrades() ([]trade, error) {
 
 	res, err := t.storer.ActiveTrades(t.appID)
 	if err != nil {
-		return []trade{}, err
+		return []trade{}, fmt.Errorf("activeTrades: fail fetch active trades, err: %w", err)
 	}
 
 	for _, v := range res {
