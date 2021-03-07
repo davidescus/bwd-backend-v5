@@ -6,6 +6,7 @@ import (
 	"bwd/pkg/step"
 	"bwd/pkg/storage"
 	"bwd/pkg/trader"
+	"bwd/pkg/utils/metrics/exporter"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,12 +14,20 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/sirupsen/logrus"
 )
 
 const (
 	stepperTypeFixInterval = "FIX_INTERVAL"
 	compounderTypeNone     = "NONE"
+)
+
+var (
+	// TODO bwd should be an app type
+	metricRun   = exporter.GetCounter("bwd_app", "run", []string{"appid"})
+	metricError = exporter.GetCounter("bwd_app", "error", []string{"appid"})
 )
 
 type ConfigApp struct {
@@ -163,6 +172,7 @@ func (a *App) Start() error {
 				a.doneSig <- struct{}{}
 				return
 			default:
+				metricRun.With(prometheus.Labels{"appid": strconv.Itoa(a.id)}).Inc()
 				a.trader.Run()
 				<-time.After(a.interval)
 			}

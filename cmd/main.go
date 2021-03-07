@@ -3,6 +3,7 @@ package main
 import (
 	"bwd/pkg/bwd"
 	syslog2 "bwd/pkg/utils"
+	"bwd/pkg/utils/metrics/exporter"
 	"context"
 	"errors"
 	"log"
@@ -41,6 +42,8 @@ func (c *Config) validate() error {
 }
 
 func main() {
+	go exporter.GetMetricsExporter("7070")
+
 	log := logger()
 
 	cfg := &Config{}

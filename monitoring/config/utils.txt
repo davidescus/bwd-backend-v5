@@ -1,0 +1,3 @@
+docker run -d -p 3000:3000 --name grafana -v configs/grafana.ini:/etc/grafana/grafana.ini -v grafana-storage:/var/lib/grafana grafana/grafana
+
+docker run -d -p 9090:9090 --name prometheus -v configs/prometheus.yml:/etc/prometheus/prometheus.yml prom/prometheus
