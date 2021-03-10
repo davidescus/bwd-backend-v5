@@ -312,13 +312,15 @@ func (a *App) initCompounder() error {
 
 func (a *App) initTrader() {
 	cfgTrader := &trader.ConfigTrader{
-		AppID:      a.id,
-		Storer:     a.storer,
-		Connector:  a.connector,
-		Stepper:    a.stepper,
-		Compounder: a.compounder,
-		Base:       a.pair.base,
-		Quote:      a.pair.quote,
+		AppID:           a.id,
+		Base:            a.pair.base,
+		Quote:           a.pair.quote,
+		MarketOrderFees: a.fees.market,
+		LimitOrderFees:  a.fees.limit,
+		Storer:          a.storer,
+		Connector:       a.connector,
+		Stepper:         a.stepper,
+		Compounder:      a.compounder,
 	}
 
 	a.trader = trader.New(cfgTrader, a.logger)

@@ -67,6 +67,21 @@ func (f *FakeConnector) PairInfo(base, quote string) (PairInfo, error) {
 	return PairInfo{
 		BasePricePrecision:  8,
 		QuotePricePrecision: 8,
+		BasePrice: struct {
+			Min, Max, Tick float64
+		}{
+			Min:  0.00000001,
+			Max:  1000,
+			Tick: 0.001,
+		},
+		BaseLot: struct {
+			Min, Max, Tick float64
+		}{
+			Min:  0.001,
+			Max:  1000,
+			Tick: 0.001,
+		},
+		QuoteMinVolume: 11,
 	}, nil
 }
 

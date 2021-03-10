@@ -44,15 +44,15 @@ func (c *Config) validate() error {
 func main() {
 	go exporter.GetMetricsExporter("7070")
 
-	log := logger()
+	logger := logger()
 
 	cfg := &Config{}
 	if err := cleanenv.ReadEnv(cfg); err != nil {
-		log.WithError(err).Fatal("can not read env vars")
+		logger.WithError(err).Fatal("can not read env vars")
 	}
 
 	if err := cfg.validate(); err != nil {
-		log.WithError(err).Fatalf("invalid config: %+v", cfg)
+		logger.WithError(err).Fatalf("invalid config: %+v", cfg)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -64,22 +64,22 @@ func main() {
 		StorageConnectionString: cfg.StorageConnectionString,
 	}
 
-	b := bwd.New(ctx, configBwd, log)
+	b := bwd.New(ctx, configBwd, logger)
 	err := b.Start()
 	if err != nil {
-		log.WithError(err).Fatal("unsuccessful start, everything stopped.")
+		logger.WithError(err).Fatal("unsuccessful start, everything stopped.")
 	}
 
-	log.Info("successful start, press Ctrl + C to graceful shutdown")
+	logger.Info("successful start, press Ctrl + C to graceful shutdown")
 	sigint := make(chan os.Signal)
 	signal.Notify(sigint, syscall.SIGINT, syscall.SIGTERM)
 	<-sigint
 
-	log.Info("bwd stopping ...")
+	logger.Info("bwd stopping ...")
 	cancel()
 	b.Wait()
 
-	log.Info("bwd successful stop.")
+	logger.Info("bwd successful stop.")
 }
 
 type UTCFormatter struct {

@@ -55,3 +55,27 @@ func castOrder(o connector.Order) order {
 		status:    o.Status,
 	}
 }
+
+func castStorageBalanceHistory(history storage.BalanceHistory) balanceHistory {
+	return balanceHistory{
+		appID:           history.AppID,
+		action:          history.Action,
+		baseVolume:      history.QuoteVolume,
+		totalNetIncome:  history.TotalNetIncome,
+		totalReinvested: history.TotalReinvested,
+		internalTradeID: history.InternalTradeID,
+		createdAt:       history.CreatedAt,
+	}
+}
+
+func castToStorageBalanceHistory(history balanceHistory) storage.BalanceHistory {
+	return storage.BalanceHistory{
+		AppID:           history.appID,
+		Action:          history.action,
+		QuoteVolume:     history.baseVolume,
+		TotalNetIncome:  history.totalNetIncome,
+		TotalReinvested: history.totalReinvested,
+		InternalTradeID: history.internalTradeID,
+		CreatedAt:       history.createdAt,
+	}
+}

@@ -10,6 +10,10 @@ type Storer interface {
 	ActiveTrades(appID int) ([]Trade, error)
 	AddTrade(trade Trade) error
 	UpdateTrade(trade Trade) error
+	// Compounder
+	LatestBalanceHistory(appID int) (BalanceHistory, error)
+	LatestTradeBalanceHistory(appID int, tradeID int) (BalanceHistory, error)
+	AddBalanceHistory(appID int, balance BalanceHistory) error
 }
 
 type App struct {
@@ -48,4 +52,14 @@ type Trade struct {
 	ClosedAt             time.Time
 	UpdatedAt            time.Time
 	CreatedAt            time.Time
+}
+
+type BalanceHistory struct {
+	AppID           int
+	Action          string
+	QuoteVolume     float64
+	TotalNetIncome  float64
+	TotalReinvested float64
+	InternalTradeID int
+	CreatedAt       time.Time
 }

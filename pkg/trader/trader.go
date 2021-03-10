@@ -24,36 +24,42 @@ const (
 )
 
 type ConfigTrader struct {
-	AppID      int
-	Base       string
-	Quote      string
-	Storer     storage.Storer
-	Connector  connector.Connector
-	Stepper    step.Stepper
-	Compounder compound.Compounder
+	AppID           int
+	Base            string
+	Quote           string
+	MarketOrderFees float64
+	LimitOrderFees  float64
+	Storer          storage.Storer
+	Connector       connector.Connector
+	Stepper         step.Stepper
+	Compounder      compound.Compounder
 }
 
 type Trader struct {
-	logger     logrus.FieldLogger
-	appID      int
-	base       string
-	quote      string
-	storer     storage.Storer
-	connector  connector.Connector
-	stepper    step.Stepper
-	compounder compound.Compounder
+	logger          logrus.FieldLogger
+	appID           int
+	base            string
+	quote           string
+	marketOrderFees float64
+	limitOrderFees  float64
+	storer          storage.Storer
+	connector       connector.Connector
+	stepper         step.Stepper
+	compounder      compound.Compounder
 }
 
 func New(cfg *ConfigTrader, logger logrus.FieldLogger) *Trader {
 	return &Trader{
-		logger:     logger.WithField("module", "trader"),
-		appID:      cfg.AppID,
-		base:       cfg.Base,
-		quote:      cfg.Quote,
-		storer:     cfg.Storer,
-		connector:  cfg.Connector,
-		stepper:    cfg.Stepper,
-		compounder: cfg.Compounder,
+		logger:          logger.WithField("module", "trader"),
+		appID:           cfg.AppID,
+		base:            cfg.Base,
+		quote:           cfg.Quote,
+		marketOrderFees: cfg.MarketOrderFees,
+		limitOrderFees:  cfg.LimitOrderFees,
+		storer:          cfg.Storer,
+		connector:       cfg.Connector,
+		stepper:         cfg.Stepper,
+		compounder:      cfg.Compounder,
 	}
 }
 
@@ -70,7 +76,8 @@ func (t *Trader) Run() {
 	// TODO reconciliation level 2
 	// detect and cancel exchange orders which are not associated with a published trade
 
-	// ??? just change statuses
+	// change trade side/status: buy to sell / sell to close when order is executed
+	// calculate, store data when intermediate step is done
 	if ok := t.moveTradesFromExecutedOnNextStatus(); !ok {
 		return
 	}
@@ -91,6 +98,7 @@ func (t *Trader) Run() {
 	}
 }
 
+// only trades with statuses buyLimitPublished/sellLimitPublished will be reconciled
 func (t *Trader) reconcileStorageTrades() bool {
 	trades, err := t.activeTrades()
 	if err != nil {
@@ -100,6 +108,7 @@ func (t *Trader) reconcileStorageTrades() bool {
 
 	var isOk = true
 
+	// refactor this mess
 	for _, trd := range trades {
 		var orderID string
 
@@ -165,7 +174,7 @@ func (t *Trader) reconcileStorageTrades() bool {
 	return isOk
 }
 
-// just move from executed on next status
+// convert buy trades to sell or close sell trades when order is executed
 func (t *Trader) moveTradesFromExecutedOnNextStatus() bool {
 	trades, err := t.activeTrades()
 	if err != nil {
@@ -174,33 +183,117 @@ func (t *Trader) moveTradesFromExecutedOnNextStatus() bool {
 	}
 
 	var isOk = true
-
 	for _, trd := range trades {
-		logger := t.logger.
-			WithField("datatrade", fmt.Sprintf("%+v", trd)).
-			WithField("datatradeid", trd.id)
-
 		switch trd.status {
 		case statusBuyLimitExecuted:
-			trd.convertedSellLimitAt = time.Now().UTC()
-			trd.status = statusSellLimit
+			if ok := t.changeTradeBuySell(trd); !ok {
+				isOk = false
+			}
 		case statusSellLimitExecuted:
-			trd.closedAt = time.Now().UTC()
-			trd.status = statusClosed
+			if ok := t.changeTradeSellClose(trd); !ok {
+				isOk = false
+			}
 		default:
-			continue
-		}
-
-		logger.WithField("updatedtrade", fmt.Sprintf("%+v", trd))
-
-		if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
-			logger.WithError(err).Error("moveTradesFromExecutedOnNextStatus: fail update trade")
-			isOk = false
 			continue
 		}
 	}
 
 	return isOk
+}
+
+func (t *Trader) changeTradeBuySell(trd trade) bool {
+	logger := t.logger.
+		WithField("datatrade", fmt.Sprintf("%+v", trd)).
+		WithField("datatradeid", trd.id)
+
+	trd.convertedSellLimitAt = time.Now().UTC()
+	trd.status = statusSellLimit
+
+	logger.WithField("updatedtrade", fmt.Sprintf("%+v", trd))
+
+	if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
+		logger.WithError(err).Error("changeTradeBuySell: fail update trade")
+		return false
+	}
+
+	return true
+}
+
+func (t *Trader) changeTradeSellClose(trd trade) bool {
+	logger := t.logger.
+		WithField("datatrade", fmt.Sprintf("%+v", trd)).
+		WithField("datatradeid", trd.id)
+
+	// idempotent add trade balance history
+	if err := t.addBalanceHistoryIfNotExists(trd); err != nil {
+		t.logger.Errorf("changeTradeSellClose: fail to addBalanceHistoryIfNotExists, err: %w", err)
+		return false
+	}
+
+	trd.closedAt = time.Now().UTC()
+	trd.status = statusClosed
+
+	logger.WithField("updatedtrade", fmt.Sprintf("%+v", trd))
+
+	if err := t.storer.UpdateTrade(castToStorageTrade(trd)); err != nil {
+		logger.WithError(err).Error("changeTradeSellClose: fail update trade")
+		return false
+	}
+
+	return true
+}
+
+// action is idempotent
+func (t *Trader) addBalanceHistoryIfNotExists(trd trade) error {
+	tradeLatestBalanceHistory, err := t.storer.LatestTradeBalanceHistory(t.appID, trd.id)
+	if err != nil {
+		return fmt.Errorf("addBalanceHistoryIfNotExists: fail fetch LatestTradeBalanceHistory, err: %w", err)
+	}
+
+	// stop here if already have entry in balance history
+	if tradeLatestBalanceHistory.InternalTradeID == trd.id {
+		return nil
+	}
+
+	prevBalance, err := t.latestBalanceHistory()
+	if err != nil {
+		return fmt.Errorf("addBalanceHistoryIfNotExists: fail fetch latestBalance, err: %w", err)
+	}
+
+	netProfit := t.tradeNetProfit(trd)
+
+	balance := balanceHistory{
+		appID:           t.appID,
+		action:          "CASHED_IN",
+		baseVolume:      netProfit,
+		totalNetIncome:  prevBalance.totalNetIncome + netProfit,
+		totalReinvested: prevBalance.totalReinvested,
+		internalTradeID: trd.id,
+		createdAt:       time.Now().UTC(),
+	}
+
+	if err := t.storer.AddBalanceHistory(t.appID, castToStorageBalanceHistory(balance)); err != nil {
+		return fmt.Errorf("addBalanceHistoryIfNotExists: fail to store balanceHistory, err: %w", err)
+	}
+
+	return nil
+}
+
+func (t *Trader) tradeNetProfit(trd trade) float64 {
+	openVolume := trd.openBasePrice * trd.baseVolume
+	closeVolume := trd.closeBasePrice * trd.baseVolume
+
+	openFees := (t.marketOrderFees / 100) * openVolume
+	if trd.openType == "LIMIT" {
+		openFees = (t.limitOrderFees / 100) * openVolume
+	}
+
+	closeFees := (t.marketOrderFees / 100) * closeVolume
+	if trd.closeType == "LIMIT" {
+		closeFees = (t.limitOrderFees / 100) * openVolume
+	}
+
+	return closeVolume - openVolume - openFees - closeFees
 }
 
 func (t *Trader) addMissingTrades() bool {
@@ -418,4 +511,23 @@ type order struct {
 	price     float64
 	volume    float64
 	status    string
+}
+
+type balanceHistory struct {
+	appID           int
+	action          string
+	baseVolume      float64
+	totalNetIncome  float64
+	totalReinvested float64
+	internalTradeID int
+	createdAt       time.Time
+}
+
+func (t *Trader) latestBalanceHistory() (balanceHistory, error) {
+	prevBalance, err := t.storer.LatestBalanceHistory(t.appID)
+	if err != nil {
+		return balanceHistory{}, err
+	}
+
+	return castStorageBalanceHistory(prevBalance), nil
 }

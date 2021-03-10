@@ -242,6 +242,138 @@ func (s *Mysql) UpdateTrade(trade Trade) error {
 	return err
 }
 
+// BalanceHistory ...
+func (s *Mysql) LatestBalanceHistory(appID int) (BalanceHistory, error) {
+	var ab BalanceHistory
+
+	q := fmt.Sprintf(`
+        SELECT 
+            app_id,
+            action,
+            quote_volume,
+            total_quote_net_income,
+            total_quote_reinvested,
+            trade_id,
+            created_at
+        FROM balance_history
+        WHERE app_id = %d
+        ORDER BY id DESC
+        LIMIT 1`,
+		appID,
+	)
+
+	row, err := s.db.Query(q)
+	if err != nil {
+		return ab, err
+	}
+	defer row.Close()
+
+	if !row.Next() {
+		return ab, nil
+	}
+
+	var createdAt mysql.NullTime
+	err = row.Scan(
+		&ab.AppID,
+		&ab.Action,
+		&ab.QuoteVolume,
+		&ab.TotalNetIncome,
+		&ab.TotalReinvested,
+		&ab.InternalTradeID,
+		&createdAt,
+	)
+	if err != nil {
+		return ab, err
+	}
+
+	if createdAt.Valid {
+		ab.CreatedAt = createdAt.Time
+	}
+
+	return ab, nil
+}
+
+// LatestTradeBalanceHistory ...
+func (s *Mysql) LatestTradeBalanceHistory(appID int, tradeID int) (BalanceHistory, error) {
+	var ab BalanceHistory
+
+	q := fmt.Sprintf(`
+        SELECT 
+            app_id,
+            action,
+            quote_volume,
+            total_quote_net_income,
+            total_quote_reinvested,
+            trade_id,
+            created_at
+        FROM balance_history
+        WHERE 1 
+           AND app_id = %d
+           AND trade_id = %d
+        ORDER BY id DESC
+        LIMIT 1`,
+		appID,
+		tradeID,
+	)
+
+	row, err := s.db.Query(q)
+	if err != nil {
+		return ab, err
+	}
+	defer row.Close()
+
+	if !row.Next() {
+		return ab, nil
+	}
+
+	var createdAt mysql.NullTime
+	err = row.Scan(
+		&ab.AppID,
+		&ab.Action,
+		&ab.QuoteVolume,
+		&ab.TotalNetIncome,
+		&ab.TotalReinvested,
+		&ab.InternalTradeID,
+		&createdAt,
+	)
+	if err != nil {
+		return ab, err
+	}
+
+	if createdAt.Valid {
+		ab.CreatedAt = createdAt.Time
+	}
+
+	return ab, nil
+}
+
+// AddAppBalanceEntry ...
+func (s *Mysql) AddBalanceHistory(appID int, balance BalanceHistory) error {
+	q := `
+		INSERT INTO balance_history (
+			app_id,
+		    action,
+		    quote_volume,
+		    total_quote_net_income,
+		    total_quote_reinvested,
+		    trade_id,
+		    created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `
+
+	_, err := s.db.Exec(q,
+		appID,
+		balance.Action,
+		balance.QuoteVolume,
+		balance.TotalNetIncome,
+		balance.TotalReinvested,
+		balance.InternalTradeID,
+		sqlNullableTime(balance.CreatedAt),
+	)
+
+	return err
+}
+
 func sqlNullableTime(t time.Time) mysql.NullTime {
 	if t.IsZero() {
 		return mysql.NullTime{}
@@ -302,6 +434,30 @@ func (s *Mysql) createSchemaIfNotExists() error {
             updated_at TIMESTAMP,
             created_at TIMESTAMP
         )    
+    `
+
+	stmt, err = s.db.Prepare(q)
+	if err != nil {
+		return err
+	}
+
+	_, err = stmt.Exec()
+	if err != nil {
+		return err
+	}
+
+	q = `
+        CREATE TABLE IF NOT EXISTS balance_history (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            app_id INT,
+            action VARCHAR(32) DEFAULT '',
+            quote_volume DECIMAL(16,10) DEFAULT 0,
+            total_quote_net_income DECIMAL(16,10) DEFAULT 0,
+            total_quote_reinvested DECIMAL(16,10) DEFAULT 0,
+            trade_id INT,
+            created_at TIMESTAMP,
+            INDEX APP_ID (app_id)
+        )  
     `
 
 	stmt, err = s.db.Prepare(q)
