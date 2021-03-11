@@ -199,6 +199,8 @@ func (s *Mysql) LatestAppClosedTradeByOpenPrice(appID int, openPrice float64) (T
 			AND app_id = ?
             AND open_base_price = ?
 			AND status = 'CLOSED'
+        ORDER BY closed_at DESC
+        LIMIT 1
     `
 
 	rows, err := s.db.Query(q, appID, openPrice)
