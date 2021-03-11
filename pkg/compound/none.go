@@ -25,17 +25,17 @@ func NewCompoundNone(cfg *ConfigNone) *None {
 	}
 }
 
-func (c *None) Volume(step float64) (float64, error) {
+func (c *None) Volume(step float64) (float64, float64, error) {
 	precision := floatPrecision(c.baseLotTick)
 	volume := toFixed(c.initialStepQuoteVolume/step, precision)
 
 	if volume > c.maxBaseLotAllowed || volume < c.minBaseLotAllowed {
-		return 0, fmt.Errorf("volume: %v not in range: %v - %v",
+		return 0, 0, fmt.Errorf("volume: %v not in range: %v - %v",
 			volume,
 			c.minBaseLotAllowed,
 			c.maxBaseLotAllowed,
 		)
 	}
 
-	return toFixed(volume, precision), nil
+	return toFixed(volume, precision), 0, nil
 }

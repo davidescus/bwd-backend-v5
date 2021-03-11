@@ -20,8 +20,9 @@ import (
 )
 
 const (
-	stepperTypeFixInterval = "FIX_INTERVAL"
-	compounderTypeNone     = "NONE"
+	stepperTypeFixInterval      = "FIX_INTERVAL"
+	compounderTypeNone          = "NONE"
+	compounderTypeProfitPercent = "PROFIT_PERCENT"
 )
 
 var (
@@ -299,6 +300,15 @@ func (a *App) initCompounder() error {
 	switch a.compound.kind {
 	case compounderTypeNone:
 		a.compounder = compound.NewCompoundNone(&compound.ConfigNone{
+			InitialStepQuoteVolume: a.stepQuoteVolume,
+			MinBaseLotAllowed:      a.pairInfo.baseLot.min,
+			MaxBaseLotAllowed:      a.pairInfo.baseLot.max,
+			BaseLotTick:            a.pairInfo.baseLot.tick,
+		})
+	case compounderTypeProfitPercent:
+		a.compounder = compound.NewProfitPercent(&compound.ConfigProfitPercent{
+			AppID:                  a.id,
+			Storer:                 a.storer,
 			InitialStepQuoteVolume: a.stepQuoteVolume,
 			MinBaseLotAllowed:      a.pairInfo.baseLot.min,
 			MaxBaseLotAllowed:      a.pairInfo.baseLot.max,

@@ -7,7 +7,8 @@ import (
 )
 
 type Compounder interface {
-	Volume(volume float64) (float64, error)
+	// returns baseVolumeWithCompoundAdded, quoteVolumeThatWasAddedAsCompound, error
+	Volume(openBasePrice float64) (float64, float64, error)
 }
 
 func round(num float64) int {

@@ -8,12 +8,13 @@ type Storer interface {
 	Apps() ([]App, error)
 	// Trader
 	ActiveTrades(appID int) ([]Trade, error)
-	AddTrade(trade Trade) error
+	AddTrade(trade Trade) (int, error)
 	UpdateTrade(trade Trade) error
 	// Compounder
 	LatestBalanceHistory(appID int) (BalanceHistory, error)
 	LatestTradeBalanceHistory(appID int, tradeID int) (BalanceHistory, error)
 	AddBalanceHistory(appID int, balance BalanceHistory) error
+	LatestAppClosedTradeByOpenPrice(appID int, openPrice float64) (Trade, error)
 }
 
 type App struct {

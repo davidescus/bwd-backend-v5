@@ -177,7 +177,81 @@ func (s *Mysql) ActiveTrades(appID int) ([]Trade, error) {
 	return trades, nil
 }
 
-func (s *Mysql) AddTrade(trade Trade) error {
+func (s *Mysql) LatestAppClosedTradeByOpenPrice(appID int, openPrice float64) (Trade, error) {
+	q := `
+		SELECT
+			id,   
+			app_id,
+			open_base_price,
+			close_base_price,
+			open_type,
+			close_type,
+			base_volume,
+			buy_order_id,
+			sell_order_id,
+			status,
+			converted_sell_limit_at,
+			closed_at,
+			updated_at,   
+			created_at
+		FROM trades
+		WHERE 1
+			AND app_id = ?
+            AND open_base_price = ?
+			AND status = 'CLOSED'
+    `
+
+	rows, err := s.db.Query(q, appID, openPrice)
+
+	if err != nil {
+		return Trade{}, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return Trade{}, nil
+	}
+
+	var trade Trade
+	var convertedSellLimitAt, closedAt, updatedAt, createdAt mysql.NullTime
+
+	err = rows.Scan(
+		&trade.ID,
+		&trade.AppID,
+		&trade.OpenBasePrice,
+		&trade.CloseBasePrice,
+		&trade.OpenType,
+		&trade.CloseType,
+		&trade.BaseVolume,
+		&trade.BuyOrderID,
+		&trade.SellOrderID,
+		&trade.Status,
+		&convertedSellLimitAt,
+		&closedAt,
+		&updatedAt,
+		&createdAt,
+	)
+	if err != nil {
+		return Trade{}, err
+	}
+
+	if convertedSellLimitAt.Valid {
+		trade.ConvertedSellLimitAt = convertedSellLimitAt.Time
+	}
+	if closedAt.Valid {
+		trade.ClosedAt = closedAt.Time
+	}
+	if updatedAt.Valid {
+		trade.UpdatedAt = updatedAt.Time
+	}
+	if createdAt.Valid {
+		trade.CreatedAt = createdAt.Time
+	}
+
+	return trade, nil
+}
+
+func (s *Mysql) AddTrade(trade Trade) (int, error) {
 	q := `
 		INSERT INTO trades (
 		    app_id,
@@ -195,7 +269,7 @@ func (s *Mysql) AddTrade(trade Trade) error {
 	    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `
 
-	_, err := s.db.Exec(q,
+	resp, err := s.db.Exec(q,
 		trade.AppID,
 		trade.OpenBasePrice,
 		trade.CloseBasePrice,
@@ -210,7 +284,12 @@ func (s *Mysql) AddTrade(trade Trade) error {
 		sqlNullableTime(trade.CreatedAt),
 	)
 
-	return err
+	lastInsertedId, err := resp.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+
+	return int(lastInsertedId), nil
 }
 
 func (s *Mysql) UpdateTrade(trade Trade) error {

@@ -60,7 +60,7 @@ func castStorageBalanceHistory(history storage.BalanceHistory) balanceHistory {
 	return balanceHistory{
 		appID:           history.AppID,
 		action:          history.Action,
-		baseVolume:      history.QuoteVolume,
+		quoteVolume:     history.QuoteVolume,
 		totalNetIncome:  history.TotalNetIncome,
 		totalReinvested: history.TotalReinvested,
 		internalTradeID: history.InternalTradeID,
@@ -72,7 +72,7 @@ func castToStorageBalanceHistory(history balanceHistory) storage.BalanceHistory 
 	return storage.BalanceHistory{
 		AppID:           history.appID,
 		Action:          history.action,
-		QuoteVolume:     history.baseVolume,
+		QuoteVolume:     history.quoteVolume,
 		TotalNetIncome:  history.totalNetIncome,
 		TotalReinvested: history.totalReinvested,
 		InternalTradeID: history.internalTradeID,

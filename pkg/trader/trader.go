@@ -265,7 +265,7 @@ func (t *Trader) addBalanceHistoryIfNotExists(trd trade) error {
 	balance := balanceHistory{
 		appID:           t.appID,
 		action:          "CASHED_IN",
-		baseVolume:      netProfit,
+		quoteVolume:     netProfit,
 		totalNetIncome:  prevBalance.totalNetIncome + netProfit,
 		totalReinvested: prevBalance.totalReinvested,
 		internalTradeID: trd.id,
@@ -306,6 +306,7 @@ func (t *Trader) addMissingTrades() bool {
 
 	isOk := true
 
+	// TODO refactor this, split in methods
 	for _, s := range steps {
 		var hasTrade bool
 		for _, trd := range trades {
@@ -320,9 +321,9 @@ func (t *Trader) addMissingTrades() bool {
 
 		logger := t.logger.WithField("step", s)
 
-		volume, err := t.compounder.Volume(s)
+		volume, quoteCompounded, err := t.compounder.Volume(s)
 		if err != nil {
-			logger.WithError(err).Error("fail calculate compound volume")
+			logger.WithError(err).Error("addMissingTrades: fail calculate compound volume")
 			isOk = false
 			continue
 		}
@@ -335,10 +336,42 @@ func (t *Trader) addMissingTrades() bool {
 			Status:         statusBuyLimit,
 			CreatedAt:      time.Now().UTC(),
 		}
-		if err := t.storer.AddTrade(trd); err != nil {
-			logger.WithError(err).
-				WithField("datatrade", fmt.Sprintf("%+v", trd)).
-				Error("fail insert trade")
+
+		logger.WithField("datatrade", fmt.Sprintf("%+v", trd))
+
+		id, err := t.storer.AddTrade(trd)
+		if err != nil {
+			logger.WithError(err).Error("addMissingTrades: fail insert trade")
+			isOk = false
+			continue
+		}
+
+		// only if exists compound
+		if quoteCompounded <= 0 {
+			continue
+		}
+
+		// TODO major issue
+		// if this fail, volume will be added again on next trade
+		latestBh, err := t.storer.LatestBalanceHistory(t.appID)
+		if err != nil {
+			logger.WithError(err).Error("addMissingTrades: fail get LatestBalanceHistory")
+			isOk = false
+			continue
+		}
+
+		bh := balanceHistory{
+			appID:           t.appID,
+			action:          "REINVEST",
+			quoteVolume:     quoteCompounded,
+			totalNetIncome:  latestBh.TotalNetIncome,
+			totalReinvested: latestBh.TotalReinvested + quoteCompounded,
+			internalTradeID: id,
+			createdAt:       time.Now().UTC(),
+		}
+		err = t.storer.AddBalanceHistory(t.appID, castToStorageBalanceHistory(bh))
+		if err != nil {
+			logger.WithError(err).Error("addMissingTrades: fail insert reinvest balance history")
 			isOk = false
 			continue
 		}
@@ -516,7 +549,7 @@ type order struct {
 type balanceHistory struct {
 	appID           int
 	action          string
-	baseVolume      float64
+	quoteVolume     float64
 	totalNetIncome  float64
 	totalReinvested float64
 	internalTradeID int
