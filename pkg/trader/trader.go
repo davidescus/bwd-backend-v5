@@ -225,7 +225,9 @@ func (t *Trader) changeTradeSellClose(trd trade) bool {
 		WithField("datatradeid", trd.id)
 
 	// idempotent add trade balance history
-	if err := t.addBalanceHistoryIfNotExists(trd); err != nil {
+	// TODO use const for action, or make specific method
+	action := "CASHED_IN"
+	if err := t.addBalanceHistoryIfNotExists(trd, action); err != nil {
 		t.logger.Errorf("changeTradeSellClose: fail to addBalanceHistoryIfNotExists, err: %w", err)
 		return false
 	}
@@ -244,7 +246,7 @@ func (t *Trader) changeTradeSellClose(trd trade) bool {
 }
 
 // action is idempotent
-func (t *Trader) addBalanceHistoryIfNotExists(trd trade) error {
+func (t *Trader) addBalanceHistoryIfNotExists(trd trade, action string) error {
 	tradeLatestBalanceHistory, err := t.storer.LatestTradeBalanceHistory(t.appID, trd.id)
 	if err != nil {
 		return fmt.Errorf("addBalanceHistoryIfNotExists: fail fetch LatestTradeBalanceHistory, err: %w", err)
@@ -252,7 +254,9 @@ func (t *Trader) addBalanceHistoryIfNotExists(trd trade) error {
 
 	// stop here if already have entry in balance history
 	if tradeLatestBalanceHistory.InternalTradeID == trd.id {
-		return nil
+		if tradeLatestBalanceHistory.Action == action {
+			return nil
+		}
 	}
 
 	prevBalance, err := t.latestBalanceHistory()
