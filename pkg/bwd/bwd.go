@@ -131,7 +131,8 @@ func (b *Bwd) createConnector(exchange string) (connector.Connector, error) {
 		apyKey := os.Getenv("BINANCE_API_KEY")
 		secretKey := os.Getenv("BINANCE_SECRET_KEY")
 		binanceCfg := &connector.BinanceConfig{
-			Interval:  3 * time.Second,
+			// TODO set interval as config
+			Interval:  1 * time.Second,
 			ApiKey:    apyKey,
 			SecretKey: secretKey,
 		}
