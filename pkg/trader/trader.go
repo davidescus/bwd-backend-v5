@@ -5,8 +5,12 @@ import (
 	"bwd/pkg/connector"
 	"bwd/pkg/step"
 	"bwd/pkg/storage"
+	"bwd/pkg/utils/metrics/exporter"
 	"fmt"
+	"strconv"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/sirupsen/logrus"
 )
@@ -21,6 +25,15 @@ const (
 	statusBuyLimitExecuted      = "BUY_LIMIT_EXECUTED"
 	statusSellLimitExecuted     = "SELL_LIMIT_EXECUTED"
 	statusClosed                = "CLOSED"
+)
+
+var (
+	metricRunLatency         = exporter.GetGauge("bwd", "trader_run_total_latency", []string{"appid"})
+	metricRecStorageLatency  = exporter.GetGauge("bwd", "trader_reconcile_storage_latency", []string{"appid"})
+	metricMoveExecLatency    = exporter.GetGauge("bwd", "trader_move_exec_latency", []string{"appid"})
+	metricAddMissingLatency  = exporter.GetGauge("bwd", "trader_add_missing_latency", []string{"appid"})
+	metricMarkPublishLatency = exporter.GetGauge("bwd", "trader_mark_publish_latency", []string{"appid"})
+	metricPublishLatency     = exporter.GetGauge("bwd", "trader_publish_latency", []string{"appid"})
 )
 
 type ConfigTrader struct {
@@ -64,6 +77,7 @@ func New(cfg *ConfigTrader, logger logrus.FieldLogger) *Trader {
 }
 
 func (t *Trader) Run() {
+	time0 := time.Now().UnixNano() / int64(time.Millisecond)
 	t.logger.Debug("run trader")
 
 	// reconciliation level 1
@@ -72,6 +86,8 @@ func (t *Trader) Run() {
 	if ok := t.reconcileStorageTrades(); !ok {
 		return
 	}
+	time1 := time.Now().UnixNano() / int64(time.Millisecond)
+	metricRecStorageLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time1 - time0))
 
 	// TODO reconciliation level 2
 	// detect and cancel exchange orders which are not associated with a published trade
@@ -81,21 +97,31 @@ func (t *Trader) Run() {
 	if ok := t.moveTradesFromExecutedOnNextStatus(); !ok {
 		return
 	}
+	time2 := time.Now().UnixNano() / int64(time.Millisecond)
+	metricMoveExecLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time2 - time1))
 
 	// create missing trades
 	if ok := t.addMissingTrades(); !ok {
 		return
 	}
+	time3 := time.Now().UnixNano() / int64(time.Millisecond)
+	metricAddMissingLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time3 - time2))
 
 	// decide who need to publish / unPublish
 	if ok := t.markForPublishUnPublish(); !ok {
 		return
 	}
+	time4 := time.Now().UnixNano() / int64(time.Millisecond)
+	metricMarkPublishLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time4 - time3))
 
 	// publish / unPublish orders for trades on exchange
-	if ok := t.reconcileFromStorageToExchange(); ok {
+	if ok := t.reconcileFromStorageToExchange(); !ok {
 		return
 	}
+
+	timeZ := time.Now().UnixNano() / int64(time.Millisecond)
+	metricPublishLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(timeZ - time4))
+	metricRunLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(timeZ - time0))
 }
 
 // only trades with statuses buyLimitPublished/sellLimitPublished will be reconciled
