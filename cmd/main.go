@@ -42,7 +42,7 @@ func (c *Config) validate() error {
 }
 
 func main() {
-	go exporter.GetMetricsExporter("7070")
+	go exporter.GetExporter("7070")
 
 	logger := logger()
 

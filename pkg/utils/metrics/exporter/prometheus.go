@@ -12,7 +12,6 @@ import (
 
 var (
 	hostname, _ = os.Hostname()
-	registry    = prometheus.NewRegistry()
 )
 
 func GetCounter(namespace, metricName string, labelNames []string) *prometheus.CounterVec {
@@ -40,8 +39,8 @@ func getAndRegisterCounterVec(ns, metricName string, labelNames []string) *prome
 		},
 	}
 	counter := prometheus.NewCounterVec(options, labelNames)
+	prometheus.MustRegister(counter)
 
-	registry.MustRegister(counter)
 	return counter
 }
 
@@ -54,7 +53,7 @@ func getAndRegisterGaugeVec(ns, metricName string, labelNames []string) *prometh
 		},
 	}
 	gauge := prometheus.NewGaugeVec(options, labelNames)
-	registry.MustRegister(gauge)
+	prometheus.MustRegister(gauge)
 
 	return gauge
 }
@@ -69,7 +68,7 @@ func getAndRegisterSummaryVec(ns, metricName string, labelNames []string) *prome
 		Objectives: map[float64]float64{0.5: 0.05, 0.75: 0.025, 0.9: 0.01, 0.95: 0.005, 0.99: 0.001, 0.999: 0.0001},
 	}
 	summary := prometheus.NewSummaryVec(options, labelNames)
-	registry.MustRegister(summary)
+	prometheus.MustRegister(summary)
 
 	return summary
 }
@@ -82,16 +81,15 @@ func getAndRegisterHistogramVec(ns, metricName string, labelNames []string) *pro
 			"hostname": hostname,
 		},
 		Buckets: []float64{10, 50, 100, 250, 500}, // expressed in units/MS not as a percentage
-		//Buckets: prometheus.LinearBuckets(10, 20, 50), // expressed in units/MS not as a percentage
 	}
 	histogram := prometheus.NewHistogramVec(options, labelNames)
-	registry.MustRegister(histogram)
+	prometheus.MustRegister(histogram)
 
 	return histogram
 }
 
-func GetMetricsExporter(port string) {
+func GetExporter(port string) {
 	server := http.NewServeMux()
-	server.Handle("/metrics", promhttp.InstrumentMetricHandler(registry, promhttp.HandlerFor(registry, promhttp.HandlerOpts{})))
+	server.Handle("/metrics", promhttp.Handler())
 	http.ListenAndServe(fmt.Sprintf(":%s", port), server)
 }
