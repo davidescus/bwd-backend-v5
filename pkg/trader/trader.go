@@ -43,6 +43,7 @@ var (
 
 	metricConnectorOrderDetailLatency = exporter.GetHistogram("bwd", "trader_connector_order_details_latency", []string{"appid"})
 	metricStorageUpdateTradeLatency   = exporter.GetHistogram("bwd", "trader_storage_update_trade_latency", []string{"appid"})
+	metricTraderOrderExecutedLatency  = exporter.GetHistogram("bwd", "trader_reconcile_publish_trade_latency", []string{"appid"})
 )
 
 type ConfigTrader struct {
@@ -224,6 +225,9 @@ func (t *Trader) reconcileStorageTrades() bool {
 			isOk = false
 			logger.Error("unknown order status")
 		}
+
+		time7 := time.Now().UnixNano() / int64(time.Millisecond)
+		metricTraderOrderExecutedLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Observe(float64(time7 - time3))
 	}
 
 	return isOk
