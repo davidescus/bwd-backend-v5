@@ -37,9 +37,12 @@ var (
 	metricPublishLatency     = exporter.GetGauge("bwd", "trader_publish_latency", []string{"appid"})
 
 	// method: reconcileStorageTrades()
-	metricRecStorageFetchTradesLatency           = exporter.GetGauge("bwd", "trader_rec_storage_fetch_trades_latency", []string{"appid"})
-	metricRecStorageConnectorOrderDetailsLatency = exporter.GetGauge("bwd", "trader_rec_storage_connector_order_details_latency", []string{"appid"})
-	metricRecStorageStorageUpdateTradeLatency    = exporter.GetGauge("bwd", "trader_rec_storage_update_trade_latency", []string{"appid"})
+	metricRecStorageFetchTradesLatency = exporter.GetGauge("bwd", "trader_rec_storage_fetch_trades_latency", []string{"appid"})
+	//metricRecStorageConnectorOrderDetailsLatency = exporter.GetGauge("bwd", "trader_rec_storage_connector_order_details_latency", []string{"appid"})
+	//metricRecStorageStorageUpdateTradeLatency    = exporter.GetGauge("bwd", "trader_rec_storage_update_trade_latency", []string{"appid"})
+
+	metricConnectorOrderDetailLatency = exporter.GetHistogram("bwd", "trader_connector_order_details_latency", []string{"appid"})
+	metricStorageUpdateTradeLatency   = exporter.GetHistogram("bwd", "trader_storage_update_trade_latency", []string{"appid"})
 )
 
 type ConfigTrader struct {
@@ -135,6 +138,7 @@ func (t *Trader) reconcileStorageTrades() bool {
 	time0 := time.Now().UnixNano() / int64(time.Millisecond)
 
 	trades, err := t.activeTrades()
+	t.logger.WithField("reconcileactivetradesnumber", fmt.Sprintf("%d", len(trades))).Debug("TODO for debug tradesnumber")
 	if err != nil {
 		t.logger.WithError(err).Error("reconcileStorageTrades: fail fetch active trades")
 		return false
@@ -162,12 +166,12 @@ func (t *Trader) reconcileStorageTrades() bool {
 			continue
 		}
 
+		time3 := time.Now().UnixNano() / int64(time.Millisecond)
 		connectorOrder := connector.Order{
 			ID:    orderID,
 			Base:  t.base,
 			Quote: t.quote,
 		}
-		time3 := time.Now().UnixNano() / int64(time.Millisecond)
 		o, err := t.connector.OrderDetails(t.appID, connectorOrder)
 		if err != nil {
 			logger.WithError(err).Error("reconcileStorageTrades: fail connector OrderDetails")
@@ -175,10 +179,14 @@ func (t *Trader) reconcileStorageTrades() bool {
 			continue
 		}
 		time4 := time.Now().UnixNano() / int64(time.Millisecond)
-		metricRecStorageConnectorOrderDetailsLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time4 - time3))
+		diff := float64(time4 - time3)
+		if diff > 150 {
+			logger.WithField("slowop", "true").Debugf("connector order detail slow: %v", diff)
+		}
+		metricConnectorOrderDetailLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Observe(diff)
 
 		ord := castOrder(o)
-		logger.WithField("dataorder", fmt.Sprintf("%+v", ord))
+		logger = logger.WithField("dataorder", fmt.Sprintf("%+v", ord))
 
 		switch ord.status {
 		case connector.OrderStatusNew:
@@ -193,7 +201,9 @@ func (t *Trader) reconcileStorageTrades() bool {
 				trd.closeType = ord.orderType
 				trd.status = statusSellLimitExecuted
 			}
-			logger.WithField("dataupdatedtrade", fmt.Sprintf("%+v", trd))
+
+			logger = logger.WithField("dataupdatedtrade", fmt.Sprintf("%+v", trd))
+
 			time5 := time.Now().UnixNano() / int64(time.Millisecond)
 			err := t.storer.UpdateTrade(castToStorageTrade(trd))
 			if err != nil {
@@ -202,7 +212,11 @@ func (t *Trader) reconcileStorageTrades() bool {
 				continue
 			}
 			time6 := time.Now().UnixNano() / int64(time.Millisecond)
-			metricRecStorageStorageUpdateTradeLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time6 - time5))
+			diff := float64(time6 - time5)
+			if diff > 150 {
+				logger.WithField("slowop", "true").Debugf("storage update trade: %v", diff)
+			}
+			metricStorageUpdateTradeLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Observe(diff)
 
 			logger.Debug("success reconcile trade")
 

@@ -81,7 +81,8 @@ func getAndRegisterHistogramVec(ns, metricName string, labelNames []string) *pro
 		ConstLabels: prometheus.Labels{
 			"hostname": hostname,
 		},
-		Buckets: []float64{10, 25, 50, 100, 200, 300, 400, 500, 750, 1000, 2000, 5000, 10000}, // expressed in units/MS not as a percentage
+		Buckets: []float64{10, 50, 100, 250, 500}, // expressed in units/MS not as a percentage
+		//Buckets: prometheus.LinearBuckets(10, 20, 50), // expressed in units/MS not as a percentage
 	}
 	histogram := prometheus.NewHistogramVec(options, labelNames)
 	registry.MustRegister(histogram)
