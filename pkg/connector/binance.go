@@ -1,6 +1,7 @@
 package connector
 
 import (
+	"bwd/pkg/utils/metrics/exporter"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,9 +11,23 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/sirupsen/logrus"
 
 	"github.com/adshao/go-binance/v2"
+)
+
+var (
+	metricAddOrderSuccessCount = exporter.GetCounter("bwd", "connector_add_order_success_count", []string{"appid"})
+	metricAddOrderErrorCount   = exporter.GetCounter("bwd", "connector_add_order_error_count", []string{"appid"})
+	metricAddOrderTotalCount   = exporter.GetCounter("bwd", "connector_add_order_total_count", []string{"appid"})
+	metricAddOrderLatency      = exporter.GetHistogram("bwd", "connector_add_order_ms_latency", []string{"appid"})
+
+	metricOrderDetailsSuccessCount = exporter.GetCounter("bwd", "connector_order_details_success_count", []string{"appid"})
+	metricOrderDetailsErrorCount   = exporter.GetCounter("bwd", "connector_order_details_error_count", []string{"appid"})
+	metricOrderDetailsTotalCount   = exporter.GetCounter("bwd", "connector_order_details_total_count", []string{"appid"})
+	metricOrderDetailsLatency      = exporter.GetHistogram("bwd", "connector_order_details_ms_latency", []string{"appid"})
 )
 
 type BinanceConfig struct {
@@ -117,8 +132,12 @@ func (b *Binance) PairInfo(base, quote string) (PairInfo, error) {
 	return PairInfo{}, fmt.Errorf("cound not find info on exchange for pair: %s%s", base, quote)
 }
 
-// TODO - DONE
 func (b *Binance) AddOrder(appID int, order Order) (string, error) {
+	startTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+
+	labels := prometheus.Labels{"appid": strconv.Itoa(appID)}
+	metricAddOrderTotalCount.With(labels).Inc()
+
 	var price string
 	var side binance.SideType
 	var orderType binance.OrderType
@@ -129,6 +148,7 @@ func (b *Binance) AddOrder(appID int, order Order) (string, error) {
 	case OrderSideSell:
 		side = binance.SideTypeSell
 	default:
+		metricAddOrderErrorCount.With(labels).Inc()
 		return "", fmt.Errorf("unknown order side: %s", order.Side)
 	}
 
@@ -138,6 +158,7 @@ func (b *Binance) AddOrder(appID int, order Order) (string, error) {
 	case OrderTypeLimit:
 		orderType = binance.OrderTypeLimit
 	default:
+		metricAddOrderErrorCount.With(labels).Inc()
 		return "", fmt.Errorf("unknown order type: %s", order.OrderType)
 	}
 
@@ -159,8 +180,14 @@ func (b *Binance) AddOrder(appID int, order Order) (string, error) {
 		Do(context.Background())
 
 	if err != nil {
+		metricAddOrderErrorCount.With(labels).Inc()
 		return "", err
 	}
+
+	metricAddOrderSuccessCount.With(labels).Inc()
+
+	endTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+	metricAddOrderLatency.With(labels).Observe(float64(endTimeMs - startTimeMs))
 
 	return fmt.Sprintf("%v", resp.OrderID), nil
 }
@@ -172,11 +199,17 @@ func (b *Binance) CancelOrder(order Order) error {
 
 // first search on new orders, after this search on exchange for it
 func (b *Binance) OrderDetails(appID int, order Order) (Order, error) {
+	startTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+
+	labels := prometheus.Labels{"appid": strconv.Itoa(appID)}
+	metricOrderDetailsTotalCount.With(labels).Inc()
+
 	b.m.Lock()
 	defer b.m.Unlock()
 
 	for _, o := range b.orders[appID] {
 		if o.ID == order.ID {
+			metricOrderDetailsSuccessCount.With(labels).Inc()
 			return o, nil
 		}
 	}
@@ -184,25 +217,34 @@ func (b *Binance) OrderDetails(appID int, order Order) (Order, error) {
 	// search order on exchange, and add it to cache
 	int64ID, err := strconv.ParseInt(order.ID, 10, 64)
 	if err != nil {
+		metricOrderDetailsErrorCount.With(labels).Inc()
 		return Order{}, fmt.Errorf("failed to parse int64 order id: %s, err: %w", order.ID, err)
 	}
 
 	symbol := fmt.Sprintf("%s%s", order.Base, order.Quote)
 	exhOrder, err := b.connection.NewGetOrderService().Symbol(symbol).OrderID(int64ID).Do(context.Background())
 	if err != nil {
+		metricOrderDetailsErrorCount.With(labels).Inc()
 		return Order{}, fmt.Errorf("failed to fetch order id: %s, err : %w", order.ID, err)
 	}
 
 	ord, err := b.castExchangeOrder(exhOrder)
 	if err != nil {
+		metricOrderDetailsErrorCount.With(labels).Inc()
 		return Order{}, err
 	}
 
 	b.orders[appID] = append(b.orders[appID], ord)
 
+	metricOrderDetailsSuccessCount.With(labels).Inc()
+
+	endTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+	metricOrderDetailsLatency.With(labels).Observe(float64(endTimeMs - startTimeMs))
+
 	return ord, nil
 }
 
+// not in use at this moment
 func (b *Binance) OrdersDetails(appID int) []Order {
 	b.m.Lock()
 	defer b.m.Unlock()

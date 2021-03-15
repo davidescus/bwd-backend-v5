@@ -28,21 +28,12 @@ const (
 )
 
 var (
-	// method: Run()
-	metricRunLatency         = exporter.GetGauge("bwd", "trader_run_total_latency", []string{"appid"})
-	metricRecStorageLatency  = exporter.GetGauge("bwd", "trader_reconcile_storage_latency", []string{"appid"})
-	metricMoveExecLatency    = exporter.GetGauge("bwd", "trader_move_exec_latency", []string{"appid"})
-	metricAddMissingLatency  = exporter.GetGauge("bwd", "trader_add_missing_latency", []string{"appid"})
-	metricMarkPublishLatency = exporter.GetGauge("bwd", "trader_mark_publish_latency", []string{"appid"})
-	metricPublishLatency     = exporter.GetGauge("bwd", "trader_publish_latency", []string{"appid"})
-
-	// method: reconcileStorageTrades()
-	metricRecStorageFetchTradesLatency = exporter.GetGauge("bwd", "trader_rec_storage_fetch_trades_latency", []string{"appid"})
-	//metricRecStorageConnectorOrderDetailsLatency = exporter.GetGauge("bwd", "trader_rec_storage_connector_order_details_latency", []string{"appid"})
-	//metricRecStorageStorageUpdateTradeLatency    = exporter.GetGauge("bwd", "trader_rec_storage_update_trade_latency", []string{"appid"})
-
-	metricConnectorOrderDetailLatency = exporter.GetHistogram("bwd", "trader_connector_order_details_latency", []string{"appid"})
-	metricStorageUpdateTradeLatency   = exporter.GetHistogram("bwd", "trader_storage_update_trade_latency", []string{"appid"})
+	metricRecStorageLatency    = exporter.GetHistogram("bwd", "trader_reconcile_storage_ms_latency", []string{"appid"})
+	metricMoveExecLatency      = exporter.GetHistogram("bwd", "trader_move_exec_to_next_status_ms_latency", []string{"appid"})
+	metricAddMissingLatency    = exporter.GetHistogram("bwd", "trader_add_missing_trades_ms_latency", []string{"appid"})
+	metricMarkPublishLatency   = exporter.GetHistogram("bwd", "trader_mark_publish_unpublish_ms_latency", []string{"appid"})
+	metricPublishTradesLatency = exporter.GetHistogram("bwd", "trader_publish_trades_ms_latency", []string{"appid"})
+	metricRunTotalLatency      = exporter.GetHistogram("bwd", "trader_run_total_ms_latency", []string{"appid"})
 )
 
 type ConfigTrader struct {
@@ -86,7 +77,7 @@ func New(cfg *ConfigTrader, logger logrus.FieldLogger) *Trader {
 }
 
 func (t *Trader) Run() {
-	time0 := time.Now().UnixNano() / int64(time.Millisecond)
+	startTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
 	t.logger.Debug("run trader")
 
 	// reconciliation level 1
@@ -95,8 +86,6 @@ func (t *Trader) Run() {
 	if ok := t.reconcileStorageTrades(); !ok {
 		return
 	}
-	time1 := time.Now().UnixNano() / int64(time.Millisecond)
-	metricRecStorageLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time1 - time0))
 
 	// TODO reconciliation level 2
 	// detect and cancel exchange orders which are not associated with a published trade
@@ -106,45 +95,36 @@ func (t *Trader) Run() {
 	if ok := t.moveTradesFromExecutedOnNextStatus(); !ok {
 		return
 	}
-	time2 := time.Now().UnixNano() / int64(time.Millisecond)
-	metricMoveExecLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time2 - time1))
 
 	// create missing trades
 	if ok := t.addMissingTrades(); !ok {
 		return
 	}
-	time3 := time.Now().UnixNano() / int64(time.Millisecond)
-	metricAddMissingLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time3 - time2))
 
 	// decide who need to publish / unPublish
 	if ok := t.markForPublishUnPublish(); !ok {
 		return
 	}
-	time4 := time.Now().UnixNano() / int64(time.Millisecond)
-	metricMarkPublishLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time4 - time3))
 
 	// publish / unPublish orders for trades on exchange
 	if ok := t.reconcileFromStorageToExchange(); !ok {
 		return
 	}
 
-	timeZ := time.Now().UnixNano() / int64(time.Millisecond)
-	metricPublishLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(timeZ - time4))
-	metricRunLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(timeZ - time0))
+	labels := prometheus.Labels{"appid": strconv.Itoa(t.appID)}
+	endTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+	metricRunTotalLatency.With(labels).Observe(float64(endTimeMs - startTimeMs))
 }
 
 // only trades with statuses buyLimitPublished/sellLimitPublished will be reconciled
 func (t *Trader) reconcileStorageTrades() bool {
-	time0 := time.Now().UnixNano() / int64(time.Millisecond)
+	startTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
 
 	trades, err := t.activeTrades()
 	if err != nil {
 		t.logger.WithError(err).Error("reconcileStorageTrades: fail fetch active trades")
 		return false
 	}
-
-	time1 := time.Now().UnixNano() / int64(time.Millisecond)
-	metricRecStorageFetchTradesLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Set(float64(time1 - time0))
 
 	var isOk = true
 
@@ -165,7 +145,6 @@ func (t *Trader) reconcileStorageTrades() bool {
 			continue
 		}
 
-		time3 := time.Now().UnixNano() / int64(time.Millisecond)
 		connectorOrder := connector.Order{
 			ID:    orderID,
 			Base:  t.base,
@@ -177,12 +156,6 @@ func (t *Trader) reconcileStorageTrades() bool {
 			isOk = false
 			continue
 		}
-		time4 := time.Now().UnixNano() / int64(time.Millisecond)
-		diff := float64(time4 - time3)
-		if diff > 150 {
-			logger.WithField("slowop", "true").Debugf("connector order detail slow: %v", diff)
-		}
-		metricConnectorOrderDetailLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Observe(diff)
 
 		ord := castOrder(o)
 		logger = logger.WithField("dataorder", fmt.Sprintf("%+v", ord))
@@ -203,19 +176,12 @@ func (t *Trader) reconcileStorageTrades() bool {
 
 			logger = logger.WithField("dataupdatedtrade", fmt.Sprintf("%+v", trd))
 
-			time5 := time.Now().UnixNano() / int64(time.Millisecond)
 			err := t.storer.UpdateTrade(castToStorageTrade(trd))
 			if err != nil {
 				logger.WithError(err).Error("reconcileStorageTrades: fail update trade")
 				isOk = false
 				continue
 			}
-			time6 := time.Now().UnixNano() / int64(time.Millisecond)
-			diff := float64(time6 - time5)
-			if diff > 150 {
-				logger.WithField("slowop", "true").Debugf("storage update trade: %v", diff)
-			}
-			metricStorageUpdateTradeLatency.With(prometheus.Labels{"appid": strconv.Itoa(t.appID)}).Observe(diff)
 
 			logger.Debug("success reconcile trade")
 
@@ -225,11 +191,17 @@ func (t *Trader) reconcileStorageTrades() bool {
 		}
 	}
 
+	labels := prometheus.Labels{"appid": strconv.Itoa(t.appID)}
+	endTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+	metricRecStorageLatency.With(labels).Observe(float64(endTimeMs - startTimeMs))
+
 	return isOk
 }
 
 // convert buy trades to sell or close sell trades when order is executed
 func (t *Trader) moveTradesFromExecutedOnNextStatus() bool {
+	startTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+
 	trades, err := t.activeTrades()
 	if err != nil {
 		t.logger.WithError(err).Error("moveTradesFromExecutedOnNextStatus: fail fetch active trades")
@@ -251,6 +223,10 @@ func (t *Trader) moveTradesFromExecutedOnNextStatus() bool {
 			continue
 		}
 	}
+
+	labels := prometheus.Labels{"appid": strconv.Itoa(t.appID)}
+	endTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+	metricMoveExecLatency.With(labels).Observe(float64(endTimeMs - startTimeMs))
 
 	return isOk
 }
@@ -355,6 +331,8 @@ func (t *Trader) tradeNetProfit(trd trade) float64 {
 }
 
 func (t *Trader) addMissingTrades() bool {
+	startTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+
 	steps := t.stepper.Steps()
 	trades, err := t.activeTrades()
 	if err != nil {
@@ -435,11 +413,17 @@ func (t *Trader) addMissingTrades() bool {
 		}
 	}
 
+	labels := prometheus.Labels{"appid": strconv.Itoa(t.appID)}
+	endTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+	metricAddMissingLatency.With(labels).Observe(float64(endTimeMs - startTimeMs))
+
 	return isOk
 }
 
 // this should decide which orders should publish / unPublish on exchange
 func (t *Trader) markForPublishUnPublish() bool {
+	startTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+
 	trades, err := t.activeTrades()
 	if err != nil {
 		t.logger.WithError(err).Error("markForPublishUnPublish: fail fetch active trades")
@@ -467,10 +451,16 @@ func (t *Trader) markForPublishUnPublish() bool {
 		}
 	}
 
+	labels := prometheus.Labels{"appid": strconv.Itoa(t.appID)}
+	endTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+	metricMarkPublishLatency.With(labels).Observe(float64(endTimeMs - startTimeMs))
+
 	return isOk
 }
 
 func (t *Trader) reconcileFromStorageToExchange() bool {
+	startTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+
 	trades, err := t.activeTrades()
 	if err != nil {
 		t.logger.WithError(err).Error("reconcileFromStorageToExchange: fail fetch active trades")
@@ -493,6 +483,10 @@ func (t *Trader) reconcileFromStorageToExchange() bool {
 			continue
 		}
 	}
+
+	labels := prometheus.Labels{"appid": strconv.Itoa(t.appID)}
+	endTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+	metricPublishTradesLatency.With(labels).Observe(float64(endTimeMs - startTimeMs))
 
 	return isOk
 }

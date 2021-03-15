@@ -1,13 +1,22 @@
 package storage
 
 import (
+	"bwd/pkg/utils/metrics/exporter"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/go-sql-driver/mysql"
 
 	_ "github.com/go-sql-driver/mysql"
+)
+
+var (
+	metricActiveTradesLatency = exporter.GetHistogram("bwd", "storage_active_trades_ms_latency", []string{"appid"})
+	metricUpdateTradeLatency  = exporter.GetHistogram("bwd", "storage_update_trade_ms_latency", []string{"appid"})
 )
 
 type Mysql struct {
@@ -103,6 +112,8 @@ func (s *Mysql) Apps() ([]App, error) {
 }
 
 func (s *Mysql) ActiveTrades(appID int) ([]Trade, error) {
+	startTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+
 	q := fmt.Sprintf(`
 		SELECT
 			id,   
@@ -173,6 +184,10 @@ func (s *Mysql) ActiveTrades(appID int) ([]Trade, error) {
 
 		trades = append(trades, trade)
 	}
+
+	labels := prometheus.Labels{"appid": strconv.Itoa(appID)}
+	endTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+	metricActiveTradesLatency.With(labels).Observe(float64(endTimeMs - startTimeMs))
 
 	return trades, nil
 }
@@ -295,6 +310,8 @@ func (s *Mysql) AddTrade(trade Trade) (int, error) {
 }
 
 func (s *Mysql) UpdateTrade(trade Trade) error {
+	startTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+
 	q := `
 		UPDATE trades SET
 			open_type = ?,
@@ -319,6 +336,10 @@ func (s *Mysql) UpdateTrade(trade Trade) error {
 		sqlNullableTime(time.Now().UTC()),
 		trade.ID,
 	)
+
+	labels := prometheus.Labels{"appid": strconv.Itoa(trade.AppID)}
+	endTimeMs := time.Now().UnixNano() / int64(time.Millisecond)
+	metricUpdateTradeLatency.With(labels).Observe(float64(endTimeMs - startTimeMs))
 
 	return err
 }
