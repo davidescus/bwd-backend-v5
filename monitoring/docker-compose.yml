@@ -4,18 +4,31 @@ services:
   prometheus:
     image: prom/prometheus
     container_name: prometheus
-    volumes:
-      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+    user: "${SYSTEM_USER}"
+    restart: unless-stopped
     ports:
       - "9090:9090"
+    volumes:
+      - ./prometheus/config:/etc/prometheus/
+      - ./prometheus/data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention=10000h'
 
   grafana:
     image: grafana/grafana
     container_name: grafana
+    user: "${SYSTEM_UID}"
+    restart: unless-stopped
     ports:
       - "3000:3000"
     volumes:
 #      - path/to-your/grafana.ini:/etc/grafana/grafana.ini
-      - ./config/datasource.yaml:/etc/grafana/provisioning/datasources/datasource.yaml
+      - ./grafana/config/datasource.yaml:/etc/grafana/provisioning/datasources/datasource.yaml
+      - ./grafana/data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
     links:
       - prometheus

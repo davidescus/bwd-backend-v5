@@ -1,2 +1,4 @@
 .idea
-setup*.sh
+setup*
+monitoring/prometheus/data/*
+monitoring/grafana/data/*
